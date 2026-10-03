@@ -1,0 +1,145 @@
+{
+  "tag": "iteration-03",
+  "filename": "granny-tactical-iteration-03.apk",
+  "bytes": 210473062,
+  "sha256": "31243d6060f3f45045aa9a484972a4876060fffb00183ed20bff7f860441bfa5",
+  "package": "com.modlab.grannycsgo",
+  "architecture": "arm64-v8a",
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": false,
+  "independent_diagnostic_launcher": true,
+  "unity_process": ":game",
+  "sdk_startup_providers_enabled": false,
+  "parts": [
+    {
+      "filename": "part-0000.bin",
+      "bytes": 8388608,
+      "sha256": "e094de2af3d2ee0975ba1150995237a720cbd7dc7d2ef646316b69d209128011"
+    },
+    {
+      "filename": "part-0001.bin",
+      "bytes": 8388608,
+      "sha256": "0c850ca26449dfafee3816f74e4709d24cd25b5fe558673e145570e0fdefd038"
+    },
+    {
+      "filename": "part-0002.bin",
+      "bytes": 8388608,
+      "sha256": "85ac5e1e41d04d3e9089c45921989376bd96f662a4652aeed5bf854dc0afa9c5"
+    },
+    {
+      "filename": "part-0003.bin",
+      "bytes": 8388608,
+      "sha256": "fdd27ef750d2b4cf28d3337e90145238d849b846ed714ec73a901fe8a75987f1"
+    },
+    {
+      "filename": "part-0004.bin",
+      "bytes": 8388608,
+      "sha256": "369a1c43b2e45657acfe109733e83867be51a717a81ba9846239b352bbc7507b"
+    },
+    {
+      "filename": "part-0005.bin",
+      "bytes": 8388608,
+      "sha256": "9c45c5ed8db71c0c3a02b6f75658947b7a7031eed938b78272987bc105d21be6"
+    },
+    {
+      "filename": "part-0006.bin",
+      "bytes": 8388608,
+      "sha256": "9050343b09b27845f1ebb2c28fc9a284d6c83ecf77d10fce11d5924be5bb0323"
+    },
+    {
+      "filename": "part-0007.bin",
+      "bytes": 8388608,
+      "sha256": "97edb6d85dcc08445100fd8ab8e7e66ec4d345d26b6590f89970e06f6b98ca8a"
+    },
+    {
+      "filename": "part-0008.bin",
+      "bytes": 8388608,
+      "sha256": "a7987c022e89467ed4fa3f5616667a72e410fbfc92e652685a473c86122fc11e"
+    },
+    {
+      "filename": "part-0009.bin",
+      "bytes": 8388608,
+      "sha256": "1f016633d93fe7fc0df343bab35ca818c7d0adff20cb91b5af4d4b7bd6e320f4"
+    },
+    {
+      "filename": "part-0010.bin",
+      "bytes": 8388608,
+      "sha256": "a0a546b259f44839370047a8e2ff346a9caee96403794c5cc6febf697a9d0316"
+    },
+    {
+      "filename": "part-0011.bin",
+      "bytes": 8388608,
+      "sha256": "f6d1dcf5ac3aff0a56a7935b34643d1c40f6676de85c5655d029064671a435d0"
+    },
+    {
+      "filename": "part-0012.bin",
+      "bytes": 8388608,
+      "sha256": "823c9bee7194dac1bb80145901819619aa805fd5e8179db72459a86d7bfe4c0d"
+    },
+    {
+      "filename": "part-0013.bin",
+      "bytes": 8388608,
+      "sha256": "1e7da32681135e1959c91409c4d08e8353df72baab6b1eb21ee32350ad835ce2"
+    },
+    {
+      "filename": "part-0014.bin",
+      "bytes": 8388608,
+      "sha256": "9d777a21b0f45363025d91e30951273c6d3a56d26322f1ec157166db8cf5dedc"
+    },
+    {
+      "filename": "part-0015.bin",
+      "bytes": 8388608,
+      "sha256": "9d16845374bf58e226ec12c6d486501b037b114156413068b1ed6d3f8fdda170"
+    },
+    {
+      "filename": "part-0016.bin",
+      "bytes": 8388608,
+      "sha256": "3bfe5c1842892af2c111c1866cadf0e7dd800f3bc8f4427df6453620d78eff7c"
+    },
+    {
+      "filename": "part-0017.bin",
+      "bytes": 8388608,
+      "sha256": "2fd8b1df3814d82b8a4b124e596358adbc3c4603bb6a62bb7fff4f62ee8f67f9"
+    },
+    {
+      "filename": "part-0018.bin",
+      "bytes": 8388608,
+      "sha256": "741bab779a6ed4eb1e446a3ded1ccf1ab9c55d4010d273a53162d48b2edf41f3"
+    },
+    {
+      "filename": "part-0019.bin",
+      "bytes": 8388608,
+      "sha256": "8aa816903b61ab27498a18a53b9f56331ab65df85889002e97abb1356807183e"
+    },
+    {
+      "filename": "part-0020.bin",
+      "bytes": 8388608,
+      "sha256": "bf2af60f06c1c4afd7f6b6ea6ca5eabaf4beb01b0c76628e8d719a94a945f0c8"
+    },
+    {
+      "filename": "part-0021.bin",
+      "bytes": 8388608,
+      "sha256": "87d7786c95c4c58dd3334a91346b79a5f28955652ae21d5891a0efdcfd859662"
+    },
+    {
+      "filename": "part-0022.bin",
+      "bytes": 8388608,
+      "sha256": "34b85e175f58e2693c34e09cffd4c70a8652bc90257a6595a26c1a0c686747c7"
+    },
+    {
+      "filename": "part-0023.bin",
+      "bytes": 8388608,
+      "sha256": "5ea89e026f07246608fa554d70006a8ec5487e2de1cdefb0c81f913d28aa06f1"
+    },
+    {
+      "filename": "part-0024.bin",
+      "bytes": 8388608,
+      "sha256": "bbbea6db1bba3ce5d7efd2c0ee0830653da918f77444b2706fa233044a0d6c72"
+    },
+    {
+      "filename": "part-0025.bin",
+      "bytes": 757862,
+      "sha256": "2cc174069d3e500fdc8c6b0e674f7aff84fb12d9d6295c6fffaa5d35456644c0"
+    }
+  ]
+}
