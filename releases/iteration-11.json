@@ -1,0 +1,42 @@
+{
+  "tag": "iteration-11",
+  "filename": "granny-tactical-iteration-11.apk",
+  "bytes": 210542694,
+  "sha256": "cfb87b7faef15c13f6da81137649194b46a57dc4047583390c00820acca2c988",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.dvloper.granny",
+  "architecture": "arm64-v8a",
+  "version_code": 102,
+  "signing_key": "same test key as iterations 9-10; installs over iteration 10",
+  "built_from": "iteration-10 APK with libgranny_csgo.so, classes6.dex and AndroidManifest.xml replaced",
+  "android_install_verified": false,
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": true,
+  "native_mode": 2,
+  "automatic_game_launch": true,
+  "independent_report_icon": true,
+  "verified_original_elf_build_id": "801a3345802f6969e7abce2c46285bdc5e8bb666",
+  "hooks": [
+    "FPSControllerNEW.FixedUpdate",
+    "MenuImageSwitcher.Start",
+    "CharacterController.Move"
+  ],
+  "player_camera_path": "Player/CameraShakeAnim/CameraPivot/Main Camera/Camera",
+  "ui": "mod canvas nested under Granny gameplay overlay canvas (AllaTexter); textured round HUD buttons (RawImage + runtime Texture2D), movable layout editor saved to files/hud_layout.txt",
+  "buy_menu": "CS:GO wheel: 6 categories, item ring, stats panel",
+  "movement": "acceleration, friction, air momentum, jump with fall-time compensation",
+  "physics_rate_hz": 60,
+  "il2cpp_api_check": "136 methods/fields present in metadata dump",
+  "ui_layout_overlap_check": [
+    "2340x1080",
+    "2400x1080",
+    "1920x1080",
+    "1280x800",
+    "2048x1536"
+  ],
+  "argument_type_guard": true,
+  "gc_handles": "pointer-sized (uintptr_t) Unity 6 GC handles",
+  "physics_interactions": "bullets mirror shootGun.Update (AddForceAtPosition + tag reactions incl. gascan explode.explodeNow); HE grenade AddExplosionForce VelocityChange 13 m/s radius 6 with line of sight; molotov/incendiary ignite gas cans; kinematic pickable items and AllaMoveObject decorations are released",
+  "bots": "scaled to the player's CharacterController height",
+  "iteration_10_device_result": "UI, camera, 60 Hz physics, models and bots worked; crash in il2cpp_gchandle_free after returning to the menu and starting a new game (32-bit truncated handle)"
+}

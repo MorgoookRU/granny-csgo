@@ -21,7 +21,7 @@
 #include "weapons_generated.h"
 #include "target_layout.h"
 
-#define MOD_ITERATION "10"
+#define MOD_ITERATION "11"
 
 using Obj = void *;
 struct Klass; struct Method; struct Field; struct Type;
@@ -72,7 +72,10 @@ static std::string bootStatus="Подключение мода…";
 static void setStatus(const std::string &s){bootStatus=s;log(s);}
 
 // GC handles are grouped so that rebuilding the world never releases live UI objects.
-struct Pins { std::vector<uint32_t> handles; };
+// Unity 6 IL2CPP handles are pointer-sized (il2cpp_gchandle_free masks the value to its page);
+// truncating them to 32 bits crashed the second game when old handles were released.
+using GCHandle = uintptr_t;
+struct Pins { std::vector<GCHandle> handles; };
 static Pins worldPins, uiPins;
 
 struct Runtime {
@@ -108,8 +111,8 @@ struct Runtime {
     Array *(*array_new)(Klass *,uintptr_t);
     Obj (*string_new)(const char *);
     void (*gc_write)(Obj,void **,Obj);
-    uint32_t (*gchandle_new)(Obj,bool);
-    void (*gchandle_free)(uint32_t);
+    GCHandle (*gchandle_new)(Obj,bool);
+    void (*gchandle_free)(GCHandle);
     void (*free_mem)(void *);
     void *(*resolve_icall)(const char *)=nullptr;
     Klass *(*class_from_type)(const Type *)=nullptr;
@@ -276,7 +279,10 @@ struct Unity {
     const Method *meshCtor,*setVertices,*setNormals,*setTriangles,*setMesh,*getMaterial,*setMaterial,*matCtor,*matShaderCtor,*matColor,*matTexture,*matHasProperty,*shaderFind;
     const Method *cameraMain,*camerasCount,*allCameras,*getFov,*setFov,*getEnabled,*setEnabled;
     const Method *fixedDelta,*frameCount,*targetFrameRate,*raycast,*findById,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
-    const Method *capsuleHeight,*capsuleRadius,*capsuleCenter,*getVelocity,*playerDeath,*grannyShot;
+    const Method *capsuleHeight,*capsuleRadius,*capsuleCenter,*getVelocity,*playerDeath,*grannyShot,*ccHeight;
+    // Objects Granny's own shotgun reacts to (shootGun.Update, reconstructed from the ARM64 code).
+    Klass *rigidbody=nullptr,*collider=nullptr,*explodeK=nullptr,*momSpiderK=nullptr,*bearTrapK=nullptr,*spiderButtonK=nullptr,*spiderK=nullptr,*ratK=nullptr,*crowK=nullptr,*plateDoorK=nullptr,*santaK=nullptr,*shotgunK=nullptr;
+    const Method *attachedRigidbody=nullptr,*forceAt=nullptr,*getTag=nullptr,*explodeNow=nullptr,*closeLucka=nullptr,*spiderDead=nullptr,*santaHit=nullptr,*componentInParent=nullptr,*overlapSphere=nullptr,*overlapSphereAll=nullptr,*explosionForce=nullptr,*getKinematic=nullptr,*setKinematic=nullptr;
     bool bind(){
 #define CLASS(member,ns,name) member=R.klass(ns,name);if(!member){setStatus("Нет класса " name);return false;}
         CLASS(object,"UnityEngine","Object") CLASS(gameObject,"UnityEngine","GameObject")
@@ -323,7 +329,18 @@ struct Unity {
         M(findById,object,"FindObjectFromInstanceID","System.Int32");
         M(setDestination,agent,"SetDestination","UnityEngine.Vector3");M(onNav,agent,"get_isOnNavMesh");M(agentSpeed,agent,"set_speed","System.Single");M(agentStop,agent,"set_stoppingDistance","System.Single");
         M(capsuleHeight,capsule,"set_height","System.Single");M(capsuleRadius,capsule,"set_radius","System.Single");M(capsuleCenter,capsule,"set_center","UnityEngine.Vector3");
-        M(getVelocity,controller,"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");M(grannyShot,granny,"grannyHitByGun");
+        M(getVelocity,controller,"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");M(grannyShot,granny,"grannyHitByGun");M(ccHeight,controller,"get_height");
+        rigidbody=R.klass("UnityEngine","Rigidbody");collider=R.klass("UnityEngine","Collider");
+        explodeK=R.klass("","explode");momSpiderK=R.klass("","MomSpiderHead");bearTrapK=R.klass("","BearTrap");spiderButtonK=R.klass("","shootSpiderButton");
+        spiderK=R.klass("","spiderControll");ratK=R.klass("","ratController");crowK=R.klass("","CrowControl");plateDoorK=R.klass("","SkjutplattaDoor");
+        santaK=R.klass("","LittleSantaController");shotgunK=R.klass("","shootGun");
+        M(attachedRigidbody,collider,"get_attachedRigidbody");M(forceAt,rigidbody,"AddForceAtPosition","UnityEngine.Vector3","UnityEngine.Vector3","UnityEngine.ForceMode");
+        M(getTag,gameObject,"get_tag");M(componentInParent,gameObject,"GetComponentInParent","System.Type","System.Boolean");
+        M(explodeNow,explodeK,"explodeNow");M(closeLucka,spiderButtonK,"closeSpiderlucka");M(spiderDead,spiderK,"spiderIsDead");M(santaHit,santaK,"set_GetHit","System.Boolean");
+        M(overlapSphere,physics,"OverlapSphere","UnityEngine.Vector3","System.Single");
+        M(overlapSphereAll,physics,"OverlapSphere","UnityEngine.Vector3","System.Single","System.Int32","UnityEngine.QueryTriggerInteraction");
+        M(getKinematic,rigidbody,"get_isKinematic");M(setKinematic,rigidbody,"set_isKinematic","System.Boolean");
+        M(explosionForce,rigidbody,"AddExplosionForce","System.Single","UnityEngine.Vector3","System.Single","System.Single","UnityEngine.ForceMode");
 #undef M
         const Method *required[]={destroy,findObjects,goCtor,getTransform,componentTransform,componentGO,addComponent,getComponent,setActive,getPosition,setPosition,getForward,getRight,getParent,setParent,setLocalPosition,setLocalScale,setEuler,rotate,meshCtor,setVertices,setNormals,setTriangles,setMesh,setMaterial,matColor,raycast,fixedDelta,frameCount};
         for(auto m:required)if(!m){setStatus("Ошибка подключения Unity. Открой журнал мода.");return false;}
@@ -357,8 +374,8 @@ struct Unity {
         for(int i=0;t&&i<12;i++){result=name(t)+(result.empty()?"":"/")+result;t=R.call(getParent,t);}
         return result;
     }
-    bool ray(V3 start,V3 dir,float distance,Hit &h){
-        dir=normal(dir);int mask=-1,ignore=1;h={};
+    bool ray(V3 start,V3 dir,float distance,Hit &h,int mask=-1){
+        dir=normal(dir);int ignore=1;h={};
         return R.value<bool>(R.call(raycast,nullptr,{&start,&dir,&h,&distance,&mask,&ignore}));
     }
     Obj hitTrans(Hit &h){
@@ -377,6 +394,13 @@ static std::vector<Obj> worldRoots;
 static V3 waypoints[16];static int waypointCount=0;
 static float now=0,stepDt=1/60.f,recoilPitch=0,recoilYaw=0,lastPitch=0,lastYaw=0,flash=0,hurt=0,hitMarker=0,grannyHP=100,grannyReset=0;
 static float cameraSearchStart=0,nextCameraProbe=0,nextVisualProbe=0,nextFrameRate=0,muzzleUntil=0,baseFov=65;
+// Granny's player capsule is 2.45 units tall (CharacterController in level2); bots match it.
+static float playerHeight=2.45f;
+// Same layers Granny's shotgun skips: Ignore Raycast (2) and Player (8).
+static constexpr int shotMask=~((1<<2)|(1<<8));
+struct Hole {Obj root=nullptr,transform=nullptr;};static Hole holes[32];static int holeIndex=0;
+static std::unordered_set<Obj> explodedCans;
+static std::unordered_set<Obj> releasedBodies;
 static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnabled=true,worldReady=false,visualsReady=false,deathHandled=false;
 static int burstLeft=0,lastGun=17,frameRate=60;
 static std::string notification="BUY — магазин, FIRE — огонь",killfeed;
@@ -533,12 +557,14 @@ static void spawnBots(){
         Bot &b=bots[i];if(U.alive(b.root))U.remove(b.root);b={};b.weapon=(int[]){17,18,11,7}[i];
         b.root=U.newGO("CSGO_Bot");U.active(b.root,false);worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
         int team=i%2?4:3;
-        box(b.transform,"Torso",{0,1.05f,0},{.46f,.6f,.28f},team);
-        box(b.transform,"Face",{0,1.55f,.02f},{.24f,.26f,.24f},8);
-        b.head=R.pin(U.trans(box(b.transform,"Helmet",{0,1.66f,0},{.3f,.14f,.3f},team==3?0:9)));
-        for(int j=0;j<2;j++){b.legs[j]=R.pin(U.trans(box(b.transform,"Leg",{j?.13f:-.13f,.43f,0},{.16f,.78f,.19f},0)));box(b.transform,"Arm",{j?.31f:-.31f,1.09f,.14f},{.13f,.45f,.16f},team);}
-        box(b.transform,"Rifle",{.2f,1.11f,.33f},{.07f,.075f,.5f},0);
-        Obj collider=U.add(b.root,U.capsule);float height=1.85f,radius=.32f;V3 center{0,.925f,0};R.call(U.capsuleHeight,collider,{&height});R.call(U.capsuleRadius,collider,{&radius});R.call(U.capsuleCenter,collider,{&center});
+        // The box figure is authored 1.85 tall and scaled to the player's capsule height.
+        Obj body=U.newGO("Body"),bodyT=R.pin(U.trans(body));U.parent(bodyT,b.transform);U.local(bodyT,{});float k=playerHeight/1.85f;U.scale(bodyT,{k,k,k});
+        box(bodyT,"Torso",{0,1.05f,0},{.46f,.6f,.28f},team);
+        box(bodyT,"Face",{0,1.55f,.02f},{.24f,.26f,.24f},8);
+        b.head=R.pin(U.trans(box(bodyT,"Helmet",{0,1.66f,0},{.3f,.14f,.3f},team==3?0:9)));
+        for(int j=0;j<2;j++){b.legs[j]=R.pin(U.trans(box(bodyT,"Leg",{j?.13f:-.13f,.43f,0},{.16f,.78f,.19f},0)));box(bodyT,"Arm",{j?.31f:-.31f,1.09f,.14f},{.13f,.45f,.16f},team);}
+        box(bodyT,"Rifle",{.2f,1.11f,.33f},{.07f,.075f,.5f},0);
+        Obj collider=U.add(b.root,U.capsule);float height=playerHeight,radius=.32f*k;V3 center{0,playerHeight*.5f,0};R.call(U.capsuleHeight,collider,{&height});R.call(U.capsuleRadius,collider,{&radius});R.call(U.capsuleCenter,collider,{&center});
         b.agent=U.add(b.root,U.agent);float speed=2.6f,stop=4;R.call(U.agentSpeed,b.agent,{&speed});R.call(U.agentStop,b.agent,{&stop});
         b.hp=100;b.armor=50;b.nextShot=now+6+i*.5f;b.target=spawnPosition(i+1);
         U.active(b.root,true);
@@ -571,7 +597,7 @@ static void releaseWorld(){
     for(auto root:worldRoots)U.remove(root);worldRoots.clear();
     R.release(worldPins);
     player=playerTransform=character=pivot=cameraObject=cameraTransform=aimTransform=gun=gunTransform=muzzle=cubeMesh=nullptr;
-    for(auto &m:mats)m=nullptr;for(auto &b:bots)b={};for(auto &e:effects)e={};for(auto &g:grenades)g={};
+    for(auto &m:mats)m=nullptr;for(auto &b:bots)b={};for(auto &e:effects)e={};for(auto &g:grenades)g={};for(auto &h:holes)h={};
     worldReady=visualsReady=false;
 }
 struct MoveState {V3 velocity{};float vy=0,air=0,budget=0;bool grounded=true,jumping=false;float jumpBuffer=-1;int frames=0;};
@@ -584,6 +610,8 @@ static void adoptController(Obj self){
     Obj playerGO=R.call(U.componentGO,self);
     if(!U.alive(character)&&U.alive(playerGO))character=U.get(playerGO,U.controller);
     character=R.pin(character);pivot=R.pin(R.field<Obj>(self,U.fps,"cameraPivot"));
+    if(U.ccHeight&&U.alive(character))playerHeight=clamp(R.value<float>(R.call(U.ccHeight,character)),1,4);
+    explodedCans.clear();releasedBodies.clear();
     cameraSearchStart=now;nextCameraProbe=0;nextVisualProbe=0;
     waypointCount=0;
     Obj grannyGO=R.field<Obj>(self,U.fps,"granny");Obj granny=U.alive(grannyGO)?U.get(grannyGO,U.granny):nullptr;
@@ -597,7 +625,7 @@ static void adoptController(Obj self){
     scoped=burstMode=wasCaught=deathHandled=false;burstLeft=0;recoilPitch=recoilYaw=lastPitch=lastYaw=0;flash=hurt=hitMarker=0;grannyHP=100;grannyReset=0;
     resetMovement();
     std::ostringstream s;s<<"Controller adopted: player="<<U.path(playerTransform)<<"; character="<<(U.alive(character)?"ok":"missing")
-        <<"; cameraPivot="<<(U.alive(pivot)?U.path(pivot):"missing")<<"; waypoints="<<waypointCount;
+        <<"; cameraPivot="<<(U.alive(pivot)?U.path(pivot):"missing")<<"; waypoints="<<waypointCount<<"; height="<<playerHeight;
     log(s.str());
     applyFrameRate(true);
 }
@@ -646,12 +674,88 @@ static void botDamage(Bot &b,float damage,bool head){
 static Obj grannyObject(){Obj go=R.field<Obj>(player,U.fps,"granny");return U.alive(go)?U.get(go,U.granny):nullptr;}
 static void grannyDamage(Obj ai,float damage){
     grannyHP-=damage;hitMarker=.18f;
-    if(grannyHP<=0&&now>grannyReset){R.call(U.grannyShot,ai);combat_reward(&combat,300);grannyReset=now+10;grannyHP=100;killfeed="GRANNY  >  +$300";noticeUntil=now+3;}
+    if(grannyHP<=0&&now>grannyReset){
+        // Granny's shotgun knocks her out by setting these three EnemyAIGranny fields.
+        R.set(ai,U.granny,"hitByGun",true);R.set(ai,U.granny,"spiderIsDead",false);R.set(ai,U.granny,"playerHaveTeddy",false);
+        combat_reward(&combat,300);grannyReset=now+10;grannyHP=100;killfeed="GRANNY  >  +$300";noticeUntil=now+3;
+    }
 }
-static void hitDamage(Hit &h,float damage){
-    Obj t=U.hitTrans(h);
-    for(auto &b:bots)if(b.hp>0&&U.childOf(t,b.transform)){botDamage(b,damage,h.point.y-U.pos(b.transform).y>1.45f);return;}
-    Obj ai=grannyObject();if(ai){Obj gt=U.trans(ai,true);if(U.childOf(t,gt))grannyDamage(ai,damage*(h.point.y-U.pos(gt).y>1.5f?4:1));}
+// Returns true when a character (bot or Granny) was hit.
+static bool hitDamage(Hit &h,float damage,Obj colliderObject){
+    Obj t=colliderObject?U.trans(colliderObject,true):U.hitTrans(h);
+    for(auto &b:bots)if(b.hp>0&&U.childOf(t,b.transform)){botDamage(b,damage,h.point.y-U.pos(b.transform).y>playerHeight*.8f);return true;}
+    Obj ai=grannyObject();
+    if(ai){Obj gt=U.trans(ai,true);if(U.childOf(t,gt)){bool head=U.name(colliderObject)=="Bip01 Head"||h.point.y-U.pos(gt).y>1.5f;grannyDamage(ai,damage*(head?4:1));return true;}}
+    return false;
+}
+// Finds a reacting component on the hit object, its parents, or anywhere in the scene.
+static Obj gameComponent(Obj go,Klass *k){
+    if(!k)return nullptr;
+    Obj c=U.alive(go)?U.get(go,k):nullptr;
+    if(!U.alive(c)&&U.alive(go)&&U.componentInParent){bool inactive=false;c=R.call(U.componentInParent,go,{R.type(k),&inactive});}
+    if(!U.alive(c)){Array *all=U.objects(k);if(all&&all->length>0&&all->length<64)c=((Obj*)all->data)[0];}
+    return U.alive(c)?c:nullptr;
+}
+static Obj shotgunField(const char *name){
+    Array *all=U.shotgunK?U.objects(U.shotgunK):nullptr;
+    if(!all||!all->length||all->length>16)return nullptr;
+    Obj go=R.field<Obj>(((Obj*)all->data)[0],U.shotgunK,name);return U.alive(go)?go:nullptr;
+}
+static void bulletHole(Hit &h){
+    Hole &hole=holes[(holeIndex++)%32];
+    if(!U.alive(hole.root)){hole.root=box(nullptr,"CSGO_BulletHole",{},{.045f,.045f,.004f},0,2);if(!hole.root)return;hole.transform=R.pin(U.trans(hole.root));worldRoots.push_back(hole.root);}
+    V3 at=h.point+h.normal*.004f,facing=h.point+h.normal;U.position(hole.transform,at);R.call(U.lookAt,hole.transform,{&facing});
+}
+static Obj gasCan(Obj go);
+static bool detonate(Obj can,const char *cause);
+// Most loose things in Granny's house are kinematic until PickUp or a trigger releases them
+// (scene level2: 174 of 237 rigidbodies). Shots and explosions release pickable items and the
+// AllaMoveObject decorations, never doors, locks, planks, the car or what the player holds.
+static bool movableItem(Obj go,const std::string &tag){
+    static const char *items[]={"chaincutter","rustypadlockkey","wheelcrank","woodenstick","gascan","hammer","wrench","teddy",
+        "screwdriver","safekey","specialkey","weaponkey","exitkey","carkey","playhousekey","hanglockkey","melon","meat","book",
+        "birdseed","vas","vas2","pepperspray","remotecontrol","sparkplug","shotgunp1","shotgunp2","shotgunp3","kugg1","kugg2",
+        "stortkugg","tb1","tb2","tb3","tb4","deadrat","carbattery","battery","bluekabel","avbitare","arrow","ammo",
+        "Paket_Santa","Paket_Bomb","Paket_Ball","ChristmasKula"};
+    bool listed=false;for(auto item:items)if(tag==item){listed=true;break;}
+    std::string path=U.path(U.trans(go));
+    if(!listed&&!(tag=="Untagged"&&path.rfind("AllaMoveObject/",0)==0))return false;
+    if(path.rfind("Player/",0)==0)return false;
+    static const char *fixed[]={"/Car/","InPlace","Holder","holder","Door","door","STATIC","Galge","Planka","Spider","OldMom","Giljotin","Granny"};
+    for(auto f:fixed)if(path.find(f)!=std::string::npos)return false;
+    return true;
+}
+static bool releaseBody(Obj body){
+    if(!U.getKinematic||!U.setKinematic||!R.value<bool>(R.call(U.getKinematic,body)))return true;
+    Obj go=R.call(U.componentGO,body);if(!U.alive(go))return false;
+    std::string tag=U.getTag?R.text(R.call(U.getTag,go)):std::string();
+    if(!movableItem(go,tag))return false;
+    bool no=false;R.call(U.setKinematic,body,{&no});
+    if(releasedBodies.insert(body).second)log("Released "+U.path(U.trans(go))+" ("+tag+")");
+    return true;
+}
+// Mirrors shootGun.Update: push the hit Rigidbody, then react by tag like Granny's shotgun.
+static void impact(Hit &h,V3 dir,float impulse,Obj colliderObject){
+    if(!U.alive(colliderObject))return;
+    Obj go=R.call(U.componentGO,colliderObject);if(!U.alive(go))return;
+    std::string tag=U.getTag?R.text(R.call(U.getTag,go)):std::string();
+    if(U.attachedRigidbody&&U.forceAt){
+        Obj body=R.call(U.attachedRigidbody,colliderObject);
+        if(U.alive(body)&&releaseBody(body)){V3 force=dir*impulse;int mode=1;R.call(U.forceAt,body,{&force,&h.point,&mode});}
+    }
+    if(tag.empty())return;
+    if(tag=="gascan")detonate(gasCan(go),"bullet");
+    else if(tag=="spiderMom"){Obj c=gameComponent(go,U.momSpiderK);if(c)R.set(c,U.momSpiderK,"getShot",true);}
+    else if(tag=="beartrap"){Obj c=gameComponent(go,U.bearTrapK);if(c)R.set(c,U.bearTrapK,"beartrapShot",true);}
+    else if(tag=="shootbutton"){Obj c=gameComponent(go,U.spiderButtonK);if(c)R.call(U.closeLucka,c);}
+    else if(tag=="spidernest"||tag=="Spider"){
+        Obj spiderGO=shotgunField("Spider");Obj c=spiderGO?U.get(spiderGO,U.spiderK):gameComponent(go,U.spiderK);
+        if(U.alive(c)){if(tag=="Spider")R.call(U.spiderDead,c);else if(!R.field<bool>(c,U.spiderK,"SpiderBitePlayer"))R.set(c,U.spiderK,"huntPlayer",true);}
+    }
+    else if(tag=="rat2"){Obj ratGO=shotgunField("rat2");Obj c=ratGO?U.get(ratGO,U.ratK):gameComponent(go,U.ratK);if(U.alive(c))R.set(c,U.ratK,"Waittimer",100.f);}
+    else if(tag=="burdoor"){Obj c=gameComponent(go,U.crowK);if(c)R.set(c,U.crowK,"shootInBur",true);}
+    else if(tag=="skjutplatta"){Obj c=gameComponent(go,U.plateDoorK);if(c)R.set(c,U.plateDoorK,"doorUnlocked",true);}
+    else if(tag=="Santa"){Obj c=gameComponent(go,U.santaK);if(c){bool yes=true;R.call(U.santaHit,c,{&yes});}}
 }
 static void tracer(V3 from,V3 to){
     Effect &e=effects[(effectIndex++)%12];
@@ -690,15 +794,84 @@ static void shot(){
     for(int i=0;i<w.pellets;i++){
         V3 dir=normal(forward+right*((random01()-.5f)*spread*.0349f)+up*((random01()-.5f)*spread*.0349f));
         Hit h;V3 end=origin+dir*range;
-        if(U.ray(origin,dir,range,h)){end=h.point;float damage=w.damage;if(w.kind==4)damage*=clamp(1-h.distance/22.f,.15f,1);hitDamage(h,damage);}
+        if(U.ray(origin,dir,range,h,shotMask)){
+            end=h.point;float damage=w.damage;if(w.kind==4)damage*=clamp(1-h.distance/22.f,.15f,1);
+            Obj colliderObject=h.collider&&U.findById?R.call(U.findById,nullptr,{&h.collider}):nullptr;
+            bool character=hitDamage(h,damage,colliderObject);
+            // Granny's shotgun pushes with power 1000 at a 1/75 s step (13.3 N*s); guns scale by damage.
+            float impulse=13.3f*clamp(w.damage*w.pellets/50.f,.4f,2.2f)/std::max(1,w.pellets);
+            impact(h,dir,impulse,colliderObject);
+            if(!character&&w.kind<6)bulletHole(h);
+        }
         if(w.kind<6)tracer(origin+forward*.3f-up*.08f+right*.08f,end);
     }
     if(muzzle){U.active(muzzle,true);muzzleUntil=now+.04f;}
     recoilPitch=std::min(recoilPitch+w.kick,12.f);
     recoilYaw+=w.kick*.45f*std::sin(combat.shots*1.7f);
 }
+// Explosions reach every layer and trigger colliders, but not through walls or floors.
+static Array *overlap(V3 p,float radius){
+    if(U.overlapSphereAll){int all=-1,collide=2;return (Array*)R.call(U.overlapSphereAll,nullptr,{&p,&radius,&all,&collide});}
+    return U.overlapSphere?(Array*)R.call(U.overlapSphere,nullptr,{&p,&radius}):nullptr;
+}
+static bool clearPath(V3 from,Obj collider,Obj body,V3 target){
+    V3 d=target-from;float distance=length(d);if(distance<.35f)return true;
+    Hit h;if(!U.ray(from,d*(1/distance),distance,h,shotMask))return true;
+    if(h.distance>=distance-.35f)return true;
+    Obj first=h.collider&&U.findById?R.call(U.findById,nullptr,{&h.collider}):nullptr;
+    if(first==collider)return true;
+    return body&&U.attachedRigidbody&&U.alive(first)&&R.call(U.attachedRigidbody,first)==body;
+}
+// A second ray from half a metre higher lets a grenade on the floor reach things on tables.
+static bool reaches(V3 p,Obj collider,Obj body,V3 target){
+    return clearPath(p,collider,body,target)||clearPath(p+V3{0,.5f,0},collider,body,target);
+}
+// Granny's gas can: the explode component on the collider or a parent ("gascan" tag in shootGun).
+static Obj gasCan(Obj go){
+    if(!U.alive(go)||!U.explodeK)return nullptr;
+    Obj can=U.get(go,U.explodeK);
+    if(!U.alive(can)&&U.componentInParent){bool inactive=false;can=R.call(U.componentInParent,go,{R.type(U.explodeK),&inactive});}
+    if(!U.alive(can)&&U.getTag&&R.text(R.call(U.getTag,go))=="gascan")can=gameComponent(go,U.explodeK);
+    if(!U.alive(can)||U.path(U.trans(go)).rfind("Player/",0)==0)return nullptr;  // never the can in the player's hands
+    return can;
+}
+static bool detonate(Obj can,const char *cause){
+    if(!can||!explodedCans.insert(can).second)return false;
+    R.call(U.explodeNow,can);notify("Бензин взорван!",2);log(std::string("Gas can exploded by ")+cause);return true;
+}
+// HE blast: throws loose objects and sets off gas cans within the radius.
+static void blast(V3 p,float radius,float impulse){
+    auto list=overlap(p,radius);
+    if(!list||list->length>1024)return;
+    auto items=(Obj*)list->data;std::unordered_set<Obj> pushed;int moved=0;
+    for(size_t i=0;i<list->length;i++){
+        Obj c=items[i];if(!U.alive(c))continue;
+        Obj go=R.call(U.componentGO,c);if(!U.alive(go))continue;
+        V3 target=U.pos(U.trans(go));
+        Obj body=U.attachedRigidbody?R.call(U.attachedRigidbody,c):nullptr;
+        if(!U.alive(body))body=nullptr;
+        if(!reaches(p,c,body,target))continue;
+        if(body&&U.explosionForce&&pushed.insert(body).second&&releaseBody(body)){
+            // VelocityChange: up to `impulse` m/s at the centre, fading linearly to the edge.
+            float up=.8f;int mode=2;R.call(U.explosionForce,body,{&impulse,&p,&radius,&up,&mode});++moved;
+        }
+        detonate(gasCan(go),"grenade");
+    }
+    if(moved)log("HE grenade pushed "+std::to_string(moved)+" objects");
+}
+// Molotov and incendiary fire ignite gas cans inside the flames.
+static void ignite(V3 p,float radius){
+    auto list=overlap(p,radius);
+    if(!list||list->length>1024)return;
+    auto items=(Obj*)list->data;
+    for(size_t i=0;i<list->length;i++){
+        Obj c=items[i];if(!U.alive(c))continue;
+        Obj go=R.call(U.componentGO,c);Obj can=gasCan(go);
+        if(can&&reaches(p,c,nullptr,U.pos(U.trans(go))))detonate(can,"fire");
+    }
+}
 static void radiusDamage(V3 p,float radius,float damage){
-    for(auto &b:bots)if(b.hp>0){V3 target=U.pos(b.transform)+V3{0,1,0};float d=length(target-p);if(d<radius&&visible(p+V3{0,.15f,0},target,b.transform))botDamage(b,damage*(1-d/radius),false);}
+    for(auto &b:bots)if(b.hp>0){V3 target=U.pos(b.transform)+V3{0,playerHeight*.5f,0};float d=length(target-p);if(d<radius&&visible(p+V3{0,.15f,0},target,b.transform))botDamage(b,damage*(1-d/radius),false);}
     Obj ai=grannyObject();if(ai){V3 target=U.pos(U.trans(ai,true))+V3{0,1,0};if(length(target-p)<radius)grannyDamage(ai,damage);}
     float self=length(U.pos(playerTransform)+V3{0,1,0}-p);if(self<radius*.7f){combat_damage(&combat,int(damage*.5f*(1-self/radius)));hurt=.5f;}
 }
@@ -713,18 +886,18 @@ static void updateGrenades(float dt){
             U.position(g.transform,g.position);
             if(g.age<1.6f&&!(g.kind==11&&collision&&g.age>.2f))continue;
             g.exploded=true;
-            if(g.kind==8){radiusDamage(g.position,6,140);U.scale(g.transform,{1.2f,1.2f,1.2f});R.call(U.setMaterial,g.renderer,{mats[7]});g.remaining=.12f;sound(3,.9f);}
+            if(g.kind==8){radiusDamage(g.position,6,140);blast(g.position,6,13);U.scale(g.transform,{1.2f,1.2f,1.2f});R.call(U.setMaterial,g.renderer,{mats[7]});g.remaining=.12f;sound(3,.9f);}
             if(g.kind==9){
-                for(auto &b:bots)if(b.hp>0&&length(U.pos(b.transform)-g.position)<15&&visible(g.position,U.pos(b.transform)+V3{0,1.5f,0},b.transform))b.blind=now+4;
+                for(auto &b:bots)if(b.hp>0&&length(U.pos(b.transform)-g.position)<15&&visible(g.position,U.pos(b.transform)+V3{0,playerHeight*.82f,0},b.transform))b.blind=now+4;
                 V3 d=g.position-U.pos(aimTransform);if(length(d)<15&&visible(U.pos(aimTransform),g.position,nullptr))flash=clamp(dot(normal(d),U.forward(aimTransform))*.8f+.2f,0,1);
                 U.scale(g.transform,{.8f,.8f,.8f});R.call(U.setMaterial,g.renderer,{mats[2]});g.remaining=.08f;
             }
             if(g.kind==10){U.position(g.transform,g.position+V3{0,1,0});U.scale(g.transform,{3.8f,2.7f,3.8f});R.call(U.setMaterial,g.renderer,{mats[6]});g.remaining=18;}
-            if(g.kind==11){U.scale(g.transform,{4,.14f,4});R.call(U.setMaterial,g.renderer,{mats[7]});g.remaining=7;}
+            if(g.kind==11){U.scale(g.transform,{4,.14f,4});R.call(U.setMaterial,g.renderer,{mats[7]});g.remaining=7;ignite(g.position,2.5f);}
             if(g.kind==12){g.remaining=12;}
         }else{
             g.remaining-=dt;g.tick-=dt;
-            if(g.kind==11&&g.tick<=0){radiusDamage(g.position,2.5f,9);if(length(U.pos(playerTransform)-g.position)<2.5f){combat_damage(&combat,6);hurt=.4f;}g.tick=.3f;}
+            if(g.kind==11&&g.tick<=0){radiusDamage(g.position,2.5f,9);ignite(g.position,2.5f);if(length(U.pos(playerTransform)-g.position)<2.5f){combat_damage(&combat,6);hurt=.4f;}g.tick=.3f;}
             if(g.kind==12&&g.tick<=0){sound(2,.4f);g.tick=.4f;for(auto &b:bots)if(now-b.lastSeen>3)b.target=g.position;}
             if(g.remaining<=0){U.remove(g.root);g.root=nullptr;}
         }
@@ -736,7 +909,7 @@ static void updateBots(){
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(!U.alive(b.root)&&b.hp>0)continue;
         if(b.hp<=0){if(b.root&&now>=b.respawn){U.position(b.transform,spawnPosition(i));U.active(b.root,true);b.hp=100;b.armor=50;b.nextShot=now+1.5f;}continue;}
-        V3 p=U.pos(b.transform),eye=p+V3{0,1.5f,0};float dist=length(target-eye);
+        V3 p=U.pos(b.transform),eye=p+V3{0,playerHeight*.82f,0};float dist=length(target-eye);
         bool seen=now>b.blind&&dist<25&&visible(eye,target,playerTransform);
         if(seen){
             if(now-b.lastSeen>.3f){b.firstSeen=now;b.nextShot=std::max(b.nextShot,now+.55f);} // reaction time
@@ -957,7 +1130,7 @@ static void boot(){
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm,void *){jvm=vm;return JNI_VERSION_1_6;}
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(JNIEnv *env,jclass cls,jstring path,jint mode,jstring token){
     if(started.exchange(true))return;
-    const char *p=env->GetStringUTFChars(path,nullptr);std::string directory=p;env->ReleaseStringUTFChars(path,p);
+    const char *p=env->GetStringUTFChars(path,nullptr);std::string directory=p;env->ReleaseStringUTFChars(path,p);filesDir=directory;
     std::string filename=directory+"/granny-csgo.log";
     if(token){const char *value=env->GetStringUTFChars(token,nullptr);std::string id=value;env->ReleaseStringUTFChars(token,value);if(id.size()==36&&id.find_first_not_of("0123456789abcdef-")==std::string::npos)readyFile=directory+"/unity-ready-"+id;}
     logFile=fopen(filename.c_str(),"a");startupFile=fopen((directory+"/granny-csgo-startup.log").c_str(),"w");

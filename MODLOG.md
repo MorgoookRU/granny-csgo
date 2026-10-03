@@ -419,3 +419,41 @@
   дампом. API-проверка: 107 методов/полей.
 - APK 10 собран из APK 9 тем же ключом (versionCode 101), ставится поверх.
   Доставка — bsdiff4-патч 9 → 10 в `delivery/iteration-10`.
+- Итерация 10 опубликована и проверена на SM-S916N: интерфейс, камера, 60 Гц,
+  модели и боты работают. При повторном входе в игру — краш в
+  `il2cpp_gchandle_free`.
+
+## 2026-10-03 — физика предметов, гранаты, кнопки, итерация 11
+
+- Краш повторного захода: GC-хэндлы Unity 6 — 64-битные (`uintptr_t`), мод
+  обрезал их до 32 бит, и `il2cpp_gchandle_free` получал мусор. Исправлено.
+- `shootGun.Update` разобран: `AddForceAtPosition(dir*1000, point)` и реакции
+  по тегу (`gascan` → `explode.explodeNow`, `granny`, `spiderMom`, `beartrap`,
+  `shootbutton`, `spidernest`, `Spider`, `rat2`, `burdoor`, `skjutplatta`,
+  `Santa`). Пули мода повторяют это; импульс 13.3 Н·с (дробовик на шаге 1/75 с),
+  масштаб по урону оружия.
+- `explode.explodeNow` (0x1515654): включает дочерний `Explosion`
+  (с `explodeTrigger`) и выключает компонент у `parent`. Повторный вызов
+  исключается набором уже взорванных баков.
+- Сцена `level2` (UnityPy): 237 Rigidbody, 174 kinematic. Масса предметов 1.0.
+  Kinematic: кусачки, ключ ржавого замка, рукоятка, палка, один вариант бака,
+  тарелки/картины/подсвечники `AllaMoveObject`. Вызовы `set_isKinematic` в коде
+  игры: `PickUp.Update`, `activateRigidbody`, `disableKinematic`,
+  `noiceObjectFalls`, `furnitureControlls.cleanUp` и др.
+- Выстрел или взрыв снимает kinematic только с подбираемых предметов (теги из
+  `PickUp.Update`) и декора `AllaMoveObject`; исключены `Player/…`, `/Car/`,
+  `InPlace`, держатели, двери, доски, гильотина, паук.
+- HE: `Physics.OverlapSphere(p, 6, все слои, Collide)`, проверка прямой
+  видимости (ещё один луч на 0.5 м выше), `AddExplosionForce(13, p, 6, 0.8,
+  VelocityChange)`, подрыв бака. Молотов/зажигательная поджигают бак в 2.5 м.
+- Боты: рост из `CharacterController.height` игрока (2.45), масштаб модели,
+  капсулы и уровня глаз.
+- HUD: `Sprite.Create` вырезан, поэтому кнопки — `RawImage` с `Texture2D`
+  (RGBA32, `LoadRawTextureData`, строки снизу вверх), текстуры рисуются
+  SDF-функциями (`native/ui_icons.h`, превью `checks/ui_icons_preview.cpp`).
+  Редактор раскладки (шестерёнка): перетаскивание, размер, прозрачность,
+  сброс; `files/hud_layout.txt`. Раскладка без пересечений с кнопками Granny
+  на 2340×1080, 2400×1080, 1920×1080, 1280×800.
+- API-проверка: 51 класс, 136 методов/полей. Хуки сверены по ELF.
+- APK 11 собран из APK 10 тем же ключом (versionCode 102). Доставка —
+  bsdiff4-патч 10 → 11 в `delivery/iteration-11`.

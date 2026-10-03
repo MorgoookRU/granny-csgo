@@ -62,7 +62,7 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 10\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 11\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');

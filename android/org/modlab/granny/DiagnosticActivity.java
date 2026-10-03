@@ -15,7 +15,7 @@ public final class DiagnosticActivity extends Activity {
         CrashJournal.append(this, "Diagnostic screen onCreate");
         LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(16 * getResources().getDisplayMetrics().density); layout.setPadding(padding,padding,padding,padding);
-        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 10 — отчёт"); title.setTextSize(22); layout.addView(title);
+        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 11 — отчёт"); title.setTextSize(22); layout.addView(title);
         TextView hint = new TextView(this);
         hint.setText("Этот экран не запускает игру сам. При чёрном экране нажми «Остановить игру», затем «Копировать отчёт».");
         layout.addView(hint);
