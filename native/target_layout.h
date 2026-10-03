@@ -2,11 +2,24 @@
 #include <cstdint>
 
 // Verified against the original Granny 1.8.12 ARM64 ELF and IL2CPP method dump.
+// Values are virtual addresses (file offset + 0x4000 in the executable segment).
 // Startup resolves only ELF addresses; managed API access waits for FixedUpdate.
 namespace target {
-constexpr uintptr_t fixedUpdate=0x14e4268;
-constexpr uintptr_t menuStart=0x14f62dc;
+constexpr uintptr_t fixedUpdate=0x14e4268;   // FPSControllerNEW.FixedUpdate
+constexpr uintptr_t menuStart=0x14f62dc;     // MenuImageSwitcher.Start
+constexpr uintptr_t characterMove=0x2af4150; // CharacterController.Move(Vector3)
 constexpr uint8_t buildId[]={0x80,0x1a,0x33,0x45,0x80,0x2f,0x69,0x69,0xe7,0xab,0xce,0x2c,0x46,0x28,0x5b,0xdc,0x5e,0x8b,0xb6,0x66};
 constexpr uint8_t fixedBytes[]={0xff,0x83,0x03,0xd1,0xee,0x2b,0x00,0xfd,0xed,0x33,0x06,0x6d,0xeb,0x2b,0x07,0x6d};
 constexpr uint8_t menuBytes[]={0xfe,0x0f,0x1d,0xf8,0xf6,0x57,0x01,0xa9,0xf4,0x4f,0x02,0xa9,0x15,0xdf,0x00,0xd0};
+constexpr uint8_t moveBytes[]={0xff,0xc3,0x00,0xd1,0xfe,0x0b,0x00,0xf9,0xf4,0x4f,0x02,0xa9,0x73,0x2f,0x00,0xb0};
+
+// libunity icall "UnityEngine.Time::get_fixedDeltaTime":
+//   str x30,[sp,#-16]!; bl GetTimeManager; ldr w9,[x0,#0x58]; ldr x8,[x0,#0x50]
+// GetTimeManager: mov w0,#7; b GetManagerFromContext
+// TimeManager+0x50 holds the fixed step as RationalTime {int64 count; uint32 rate; uint32 denominator}.
+// Granny ships count=1881129 at rate 141120000/1 (1/75 s).
+constexpr uint32_t fixedGetter[]={0xf81f0ffe,0,0xb9405809,0xf9402808};
+constexpr uint32_t timeManagerGetter=0x528000e0;
+constexpr int64_t fixedRate=141120000;
+constexpr int64_t originalFixedCount=1881129;
 }

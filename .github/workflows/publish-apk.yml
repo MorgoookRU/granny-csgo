@@ -2,9 +2,14 @@ name: Publish prepared APK
 
 on:
   push:
-    branches: [apk-delivery, 'apk-delivery-*']
-    paths: [delivery/READY]
+    branches: [apk-delivery, 'apk-delivery-*', 'ccr-*']
+    paths: [delivery/READY, 'delivery/*/READY']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag staged in delivery/<tag>/ (empty: newest staged delivery)'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -15,31 +20,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Reconstruct and verify APK
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          python3 - <<'PY'
-          import hashlib, json, os
-          from pathlib import Path
-          metadata = json.loads(Path('delivery/manifest.json').read_text())
-          apk = Path(os.environ['RUNNER_TEMP']) / metadata['filename']
-          digest = hashlib.sha256()
-          with apk.open('wb') as output:
-              for part in metadata['parts']:
-                  data = (Path('delivery/parts') / part['filename']).read_bytes()
-                  if hashlib.sha256(data).hexdigest() != part['sha256']:
-                      raise SystemExit('Part checksum failed: ' + part['filename'])
-                  output.write(data)
-                  digest.update(data)
-          if apk.stat().st_size != metadata['bytes'] or digest.hexdigest() != metadata['sha256']:
-              raise SystemExit('APK checksum or size failed')
-          checksum = Path(str(apk) + '.sha256')
-          checksum.write_text(metadata['sha256'] + '  ' + apk.name + '\n')
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('APK_PATH=' + str(apk) + '\n')
-              env.write('RELEASE_TAG=' + metadata['tag'] + '\n')
-          print('Verified:', apk.name, apk.stat().st_size, digest.hexdigest())
-          PY
+          python3 -m pip install --quiet bsdiff4==1.2.6
+          python3 scripts/restore_delivery.py --out "$RUNNER_TEMP" --tag "${{ inputs.tag }}" >> "$GITHUB_ENV"
       - name: Attach APK to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+        run: |
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" --notes-file "$RELEASE_NOTES" --prerelease
+          fi
+          gh release upload "$RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" --repo "$GITHUB_REPOSITORY" --clobber

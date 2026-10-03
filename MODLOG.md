@@ -341,3 +341,52 @@
   asset 608331497 загружен. Размер и GitHub SHA-256 digest совпадают с
   подписанным APK; checksum asset также опубликован. Установка и Practice
   на Samsung в этой версии требуют пользовательской проверки.
+
+## 2026-10-03 — UI в игре, меню закупки CS:GO и движение, итерация 9
+
+- Отчёт APK 8: API привязан, контроллер и CharacterController найдены,
+  но бесконечно «camera missing»; `GameObject.GetComponentInChildren(Type)`
+  недоступен. UI создавался только после готовности камеры, поэтому в Practice
+  не появлялось ничего.
+- Работа продолжена в новом окружении без `/workspace/granny-lab`: APK 8 скачан
+  из Release iteration-08 (SHA-256 совпал), из него извлечены `libil2cpp.so`,
+  `global-metadata.dat`, `libunity.so` и сцены.
+- Дамп метаданных 31 собран через AssetRipper.LibCpp2IL 1.0.9 (.NET 8):
+  10037 типов. RVA LibCpp2IL — файловые смещения; виртуальный адрес = +0x4000.
+- UnityPy-разбор `level2`: камера игрока —
+  `Player/CameraShakeAnim/CameraPivot/Main Camera/Camera`. Компонент Camera на
+  `Main Camera` (тег MainCamera) выключен, поэтому `Camera.main` = null. Это и
+  стриппинг 1-аргументной перегрузки полностью объясняют отказ APK 8.
+- Канвасы Granny: ScreenSpaceOverlay, CanvasScaler 800×600, match 0.5;
+  порядки кнопок 0–5, пауза 8, чёрные экраны 10, реклама 50. Координаты кнопок
+  Granny пересчитаны в доли экрана S23+, кнопки мода размещены в свободных зонах.
+- В билде нет `Canvas.set_renderMode` и `Time.set_fixedDeltaTime`; есть
+  `Camera.GetAllCameras`, `Component.GetComponentsInChildren(Type)`,
+  `Behaviour.get_enabled`, `Shader.Find`, UI.Text/Image/Shadow/GraphicRaycaster.
+- Шейдеры в билде: Legacy Self-Illumin/Diffuse, Legacy Diffuse, Sprites/Default,
+  Hidden/Internal-Colored и др. Материалы моделей мода создаются от них.
+- Дизассемблирован `FPSControllerNEW.FixedUpdate`: схема FirstPersonControl,
+  скорости 6/5/6 из сцены, в воздухе `inAirMultiplier=0`; после Move
+  `timeInAir` растёт, при приземлении >0.36 с — жёсткая посадка, >0.7 с —
+  `PlayerLandBad` (значения из сцены). `CharacterController.Move` вызывают
+  только FixedUpdate игрока и `tapcontrol`.
+- TimeManager: шаг физики 1881129/141120000 = 1/75 с; игра ставит
+  `targetFrameRate=-1`. Иcall `get_fixedDeltaTime` в libunity читает
+  RationalTime по +0x50 после `GetManagerFromContext(7)`. ИИ Granny и
+  остальные FixedUpdate используют `Time.deltaTime`.
+- Реализовано: собственный overlay-Canvas (порядок 6), поиск включённой камеры
+  под cameraPivot/внутри игрока с запасным прицелом от cameraPivot, колесо
+  закупки CS:GO (6 категорий, кольцо оружия, центр с ценой и полосами
+  характеристик, Kevlar/Helmet, боты, 60/120 FPS), хук `CharacterController.Move`
+  с разгоном/трением/инерцией и прыжком 0.85 м с компенсацией `timeInAir`,
+  перевод физики на 1/60 с после проверки кода и исходного значения, цветные
+  модели на Self-Illumin, прицел CS-стиля, маркер попадания, оверлей прицела.
+- Новые проверки: `il2cpp_api_check.py` (105 методов/полей найдены; ловит
+  вызов APK 8), `target_layout_check.py` для трёх хуков по ELF и дампу,
+  `frame_pacing_check.py` (паттерн getter уникален: 0x4b896c). Боевое ядро
+  проходит `combat_check.c`. Раскладка UI без пересечений на 5 соотношениях.
+- APK 9 собран из APK 8: заменены `libgranny_csgo.so`, `classes6.dex`,
+  манифест (метка · 9, versionCode 100), прочие 722 записи побайтно прежние.
+  Подписан новым тестовым ключом: ключ итераций 1–8 недоступен, установка
+  требует удаления старой версии. Доставка — bsdiff4-патч в `delivery/iteration-09`.
+- На Samsung девятая сборка ещё не запускалась.

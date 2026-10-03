@@ -62,13 +62,13 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 8\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 9\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
         try { out.append("page size=").append(android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)).append('\n'); }
         catch (Exception ignored) { }
-        out.append("Unity runs in :game; default AUTO weapons+bots after gameplay callback; controls use Unity UI; SDK startup providers disabled.\n");
+        out.append("Unity runs in :game; mod canvas + CS:GO buy wheel; movement hook on CharacterController.Move; 60 Hz physics; SDK startup providers disabled.\n");
         out.append("\nRESOURCE LOOKUP\n").append(resourceStatus(context,"game_view_content_description","string"))
            .append('\n').append(resourceStatus(context,"unitySurfaceView","id")).append('\n');
         out.append("\nSTARTUP JOURNAL\n").append(file(context, FILE));

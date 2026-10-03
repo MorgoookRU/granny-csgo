@@ -13,6 +13,7 @@ typedef struct {
     int owned[MAX_WEAPONS], ammo[MAX_WEAPONS], reserve[MAX_WEAPONS];
     int weapon, money, kills, health, armor, trigger_down, shots;
     float cooldown, reload_left;
+    int helmet;
 } Combat;
 
 static inline void combat_init(Combat *c, const Weapon *w, int count) {

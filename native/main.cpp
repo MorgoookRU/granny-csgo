@@ -21,6 +21,8 @@
 #include "weapons_generated.h"
 #include "target_layout.h"
 
+#define MOD_ITERATION "9"
+
 using Obj = void *;
 struct Klass; struct Method; struct Field; struct Type;
 struct Array { void *klass, *monitor, *bounds; uintptr_t length; char data[0]; };
@@ -37,17 +39,17 @@ static float dot(V3 a,V3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 static float length(V3 a){return std::sqrt(dot(a,a));}
 static V3 normal(V3 a){float n=length(a);return n>0.0001f?a*(1.f/n):V3{};}
 static V3 cross(V3 a,V3 b){return {a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}
+static V3 flat(V3 a){return {a.x,0,a.z};}
 static float clamp(float v,float a,float b){return std::max(a,std::min(v,b));}
 
 static JavaVM *jvm;
 static jclass overlay;
 static jmethodID soundCallback;
-static std::mutex logMutex, hudMutex;
+static std::mutex logMutex;
 static FILE *logFile;
 static FILE *startupFile;
 static size_t startupBytes=0;
 static std::string readyFile;
-static std::string bootStatus="Подключение мода…", hud="{}";
 static std::atomic<int> fireInput{0}, reloadInput{0}, buyInput{-1}, selectInput{-1};
 static std::atomic<int> altInput{0}, jumpInput{0}, spawnInput{0}, armorInput{0};
 static std::atomic<bool> started{false}, paused{false};
@@ -66,15 +68,12 @@ static void log(const std::string &s){
     }
 }
 TraceScope::TraceScope(const char *stage){++traceDepth;log(std::string("STAGE ")+stage);}
-static void setStatus(const std::string &s){
-    {std::lock_guard<std::mutex> lock(hudMutex);bootStatus=s;}
-    log(s);
-}
-static std::string escape(const std::string &s){
-    std::string o;
-    for(char c:s){if(c=='"'||c=='\\')o+='\\';if(c=='\n')o+="\\n";else if((unsigned char)c>=32)o+=c;}
-    return o;
-}
+static std::string bootStatus="Подключение мода…";
+static void setStatus(const std::string &s){bootStatus=s;log(s);}
+
+// GC handles are grouped so that rebuilding the world never releases live UI objects.
+struct Pins { std::vector<uint32_t> handles; };
+static Pins worldPins, uiPins;
 
 struct Runtime {
     void *handle=nullptr;
@@ -108,20 +107,18 @@ struct Runtime {
     Obj (*object_new)(Klass *);
     Array *(*array_new)(Klass *,uintptr_t);
     Obj (*string_new)(const char *);
-    void *(*thread_attach)(void *);
-    void (*thread_detach)(void *);
     void (*gc_write)(Obj,void **,Obj);
     uint32_t (*gchandle_new)(Obj,bool);
     void (*gchandle_free)(uint32_t);
     void (*free_mem)(void *);
+    void *(*resolve_icall)(const char *)=nullptr;
     std::unordered_map<std::string,Klass *> classes;
     std::unordered_map<std::string,const Method *> methods;
-    std::vector<uint32_t> roots;
+    std::unordered_map<std::string,Field *> fields;
+    Pins *pins=&worldPins;
     Klass *unityObject=nullptr;
-    const Method *nativeAlive=nullptr;
     Field *cachedPointer=nullptr;
     std::unordered_set<std::string> failures;
-    int errors=0;
 
     bool init(){
 #define BIND(member,symbol) member=reinterpret_cast<decltype(member)>(dlsym(handle,symbol));if(!member){setStatus(std::string("Нет API: ")+symbol);return false;}
@@ -155,13 +152,12 @@ struct Runtime {
         BIND(object_new,"il2cpp_object_new")
         BIND(array_new,"il2cpp_array_new")
         BIND(string_new,"il2cpp_string_new")
-        BIND(thread_attach,"il2cpp_thread_attach")
-        BIND(thread_detach,"il2cpp_thread_detach")
         BIND(gc_write,"il2cpp_gc_wbarrier_set_field")
         BIND(gchandle_new,"il2cpp_gchandle_new")
         BIND(gchandle_free,"il2cpp_gchandle_free")
         BIND(free_mem,"il2cpp_free")
 #undef BIND
+        resolve_icall=reinterpret_cast<decltype(resolve_icall)>(dlsym(handle,"il2cpp_resolve_icall"));
         return true;
     }
     std::string name(Klass *c){return c?std::string(class_get_namespace(c))+"."+class_get_name(c):"null";}
@@ -182,11 +178,11 @@ struct Runtime {
             Klass *c=class_from_name(assembly_get_image(assemblies[i]),ns,name);
             if(c){classes[key]=c;return c;}
         }
-        return nullptr;
+        classes[key]=nullptr;log("Unavailable class: "+key);return nullptr;
     }
     const Method *method(Klass *c,const char *name,std::initializer_list<const char *> signature){
         if(!c)return nullptr;
-        std::string key=std::to_string((uintptr_t)c)+":"+name;
+        std::string key=this->name(c)+"::"+name;
         for(auto s:signature)key+=std::string(";")+s;
         auto f=methods.find(key);if(f!=methods.end())return f->second;
         for(auto k=c;k;k=class_get_parent(k)){
@@ -198,7 +194,15 @@ struct Runtime {
                 if(ok){methods[key]=m;return m;}
             }
         }
-        methods[key]=nullptr;log(std::string("Unavailable method: ")+key);return nullptr;
+        methods[key]=nullptr;log("Unavailable method: "+key);return nullptr;
+    }
+    Field *fieldOf(Klass *c,const char *name){
+        if(!c)return nullptr;
+        std::string key=this->name(c)+"."+name;
+        auto f=fields.find(key);if(f!=fields.end())return f->second;
+        Field *result=class_get_field_from_name(c,name);fields[key]=result;
+        if(!result)log("Unavailable field: "+key);
+        return result;
     }
     Obj call(const Method *m,Obj self=nullptr,std::initializer_list<void *> args={}){
         if(!m)return nullptr;
@@ -228,44 +232,61 @@ struct Runtime {
         }
         void *raw=object_unbox(o);if(raw)memcpy(&v,raw,sizeof(v));return v;
     }
-    template<class T>T field(Obj o,Klass *c,const char *name){T v{};auto f=c?class_get_field_from_name(c,name):nullptr;if(o&&f)field_get_value(o,f,&v);else if(!f)failure(std::string("field:")+name,std::string("Unavailable field: ")+name);return v;}
-    template<class T>void set(Obj o,Klass *c,const char *name,T v){auto f=class_get_field_from_name(c,name);if(o&&f)field_set_value(o,f,&v);}
+    template<class T>T field(Obj o,Klass *c,const char *name){T v{};Field *f=fieldOf(c,name);if(o&&f)field_get_value(o,f,&v);return v;}
+    template<class T>void set(Obj o,Klass *c,const char *name,T v){Field *f=fieldOf(c,name);if(o&&f)field_set_value(o,f,&v);}
     Obj type(Klass *c){return c?type_get_object(class_get_type(c)):nullptr;}
-    Obj pin(Obj o){if(o)roots.push_back(gchandle_new(o,false));return o;}
-    void clearRoots(){for(auto h:roots)gchandle_free(h);roots.clear();}
+    Obj pin(Obj o){if(o&&pins)pins->handles.push_back(gchandle_new(o,false));return o;}
+    void release(Pins &p){for(auto h:p.handles)gchandle_free(h);p.handles.clear();}
+    // System.String: length at 0x10, UTF-16 characters at 0x14 (verified in the metadata dump).
+    std::string text(Obj s){
+        std::string out;if(!s)return out;
+        int32_t n=*reinterpret_cast<int32_t*>(static_cast<char*>(s)+0x10);
+        auto chars=reinterpret_cast<const uint16_t*>(static_cast<char*>(s)+0x14);
+        for(int i=0;i<n&&i<128;i++){
+            uint32_t c=chars[i];
+            if(c<0x80)out+=char(c);
+            else if(c<0x800){out+=char(0xc0|(c>>6));out+=char(0x80|(c&0x3f));}
+            else{out+=char(0xe0|(c>>12));out+=char(0x80|((c>>6)&0x3f));out+=char(0x80|(c&0x3f));}
+        }
+        return out;
+    }
 } R;
+struct PinScope { Pins *previous; explicit PinScope(Pins &p):previous(R.pins){R.pins=&p;} ~PinScope(){R.pins=previous;} };
 
 struct Unity {
-    Klass *object,*gameObject,*component,*transform,*renderer,*material,*mesh,*meshFilter,*meshRenderer;
-    Klass *camera,*time,*physics,*hit,*nav,*agent,*capsule,*controller,*vec,*integer,*fps,*granny;
-    const Method *objectAlive,*destroy,*findObjects,*goCtor,*getTransform,*componentTransform,*componentGO;
-    const Method *addComponent,*getComponent,*getComponentInChildren,*setActive,*setLayer,*getPosition,*setPosition,*getForward,*getRight;
+    Klass *object,*gameObject,*component,*behaviour,*transform,*renderer,*material,*shader,*mesh,*meshFilter,*meshRenderer;
+    Klass *camera,*time,*physics,*hit,*nav,*agent,*capsule,*controller,*vec,*integer,*fps,*granny,*application,*joystick;
+    const Method *destroy,*findObjects,*objectName,*goCtor,*getTransform,*componentTransform,*componentGO,*componentsInChildren;
+    const Method *addComponent,*getComponent,*setActive,*setLayer,*getPosition,*setPosition,*getForward,*getRight;
     const Method *getParent,*setParent,*setLocalPosition,*setLocalScale,*setEuler,*rotate,*lookAt;
-    const Method *meshCtor,*setVertices,*setNormals,*setTriangles,*setMesh,*getMaterial,*setMaterial,*matCtor,*matColor,*matTexture;
-    const Method *cameraMain,*setFov,*setClip,*fixedDelta,*raycast,*hitTransform,*findById,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
-    const Method *capsuleHeight,*capsuleRadius,*capsuleCenter,*getVelocity,*playerDeath;
+    const Method *meshCtor,*setVertices,*setNormals,*setTriangles,*setMesh,*getMaterial,*setMaterial,*matCtor,*matShaderCtor,*matColor,*matTexture,*matHasProperty,*shaderFind;
+    const Method *cameraMain,*camerasCount,*allCameras,*getFov,*setFov,*getEnabled,*setEnabled;
+    const Method *fixedDelta,*frameCount,*targetFrameRate,*raycast,*findById,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
+    const Method *capsuleHeight,*capsuleRadius,*capsuleCenter,*getVelocity,*playerDeath,*grannyShot;
     bool bind(){
 #define CLASS(member,ns,name) member=R.klass(ns,name);if(!member){setStatus("Нет класса " name);return false;}
         CLASS(object,"UnityEngine","Object") CLASS(gameObject,"UnityEngine","GameObject")
-        CLASS(component,"UnityEngine","Component") CLASS(transform,"UnityEngine","Transform")
-        CLASS(renderer,"UnityEngine","Renderer") CLASS(material,"UnityEngine","Material")
+        CLASS(component,"UnityEngine","Component") CLASS(behaviour,"UnityEngine","Behaviour")
+        CLASS(transform,"UnityEngine","Transform") CLASS(renderer,"UnityEngine","Renderer")
+        CLASS(material,"UnityEngine","Material") CLASS(shader,"UnityEngine","Shader")
         CLASS(mesh,"UnityEngine","Mesh") CLASS(meshFilter,"UnityEngine","MeshFilter")
         CLASS(meshRenderer,"UnityEngine","MeshRenderer") CLASS(camera,"UnityEngine","Camera")
         CLASS(time,"UnityEngine","Time") CLASS(physics,"UnityEngine","Physics")
         CLASS(hit,"UnityEngine","RaycastHit") CLASS(nav,"UnityEngine.AI","NavMesh")
         CLASS(agent,"UnityEngine.AI","NavMeshAgent") CLASS(capsule,"UnityEngine","CapsuleCollider")
-        CLASS(controller,"UnityEngine","CharacterController")
+        CLASS(controller,"UnityEngine","CharacterController") CLASS(application,"UnityEngine","Application")
         CLASS(vec,"UnityEngine","Vector3") CLASS(integer,"System","Int32")
         CLASS(fps,"","FPSControllerNEW") CLASS(granny,"","EnemyAIGranny")
 #undef CLASS
+        joystick=R.klass("","NewJoystickScript");
 #define M(dst,cl,n,...) dst=R.method(cl,n,{__VA_ARGS__})
-        M(objectAlive,object,"op_Implicit","UnityEngine.Object");
         M(destroy,object,"Destroy","UnityEngine.Object","System.Single");
-        M(findObjects,object,"FindObjectsOfType","System.Type");
+        M(findObjects,object,"FindObjectsOfType","System.Type");M(objectName,object,"get_name");
         M(goCtor,gameObject,".ctor","System.String");
         M(getTransform,gameObject,"get_transform");M(componentTransform,component,"get_transform");M(componentGO,component,"get_gameObject");
+        // GameObject.GetComponentInChildren(Type) is stripped in this build; the array variant survives.
+        M(componentsInChildren,component,"GetComponentsInChildren","System.Type");
         M(addComponent,gameObject,"AddComponent","System.Type");M(getComponent,gameObject,"GetComponent","System.Type");
-        M(getComponentInChildren,gameObject,"GetComponentInChildren","System.Type");
         M(setActive,gameObject,"SetActive","System.Boolean");M(setLayer,gameObject,"set_layer","System.Int32");
         M(getPosition,transform,"get_position");M(setPosition,transform,"set_position","UnityEngine.Vector3");
         M(getForward,transform,"get_forward");M(getRight,transform,"get_right");M(getParent,transform,"get_parent");
@@ -275,18 +296,24 @@ struct Unity {
         M(lookAt,transform,"LookAt","UnityEngine.Vector3");
         M(meshCtor,mesh,".ctor");M(setVertices,mesh,"set_vertices","UnityEngine.Vector3[]");M(setNormals,mesh,"set_normals","UnityEngine.Vector3[]");M(setTriangles,mesh,"set_triangles","System.Int32[]");
         M(setMesh,meshFilter,"set_sharedMesh","UnityEngine.Mesh");M(getMaterial,renderer,"get_sharedMaterial");M(setMaterial,renderer,"set_sharedMaterial","UnityEngine.Material");
-        M(matCtor,material,".ctor","UnityEngine.Material");M(matColor,material,"set_color","UnityEngine.Color");M(matTexture,material,"set_mainTexture","UnityEngine.Texture");
-        M(cameraMain,camera,"get_main");M(setFov,camera,"set_fieldOfView","System.Single");M(setClip,camera,"set_nearClipPlane","System.Single");M(fixedDelta,time,"get_fixedDeltaTime");
+        M(matCtor,material,".ctor","UnityEngine.Material");M(matShaderCtor,material,".ctor","UnityEngine.Shader");
+        M(matColor,material,"set_color","UnityEngine.Color");M(matTexture,material,"set_mainTexture","UnityEngine.Texture");
+        M(matHasProperty,material,"HasProperty","System.String");M(shaderFind,shader,"Find","System.String");
+        M(cameraMain,camera,"get_main");M(camerasCount,camera,"get_allCamerasCount");M(allCameras,camera,"GetAllCameras","UnityEngine.Camera[]");
+        M(getFov,camera,"get_fieldOfView");M(setFov,camera,"set_fieldOfView","System.Single");
+        M(getEnabled,behaviour,"get_enabled");M(setEnabled,behaviour,"set_enabled","System.Boolean");
+        M(fixedDelta,time,"get_fixedDeltaTime");M(frameCount,time,"get_frameCount");
+        M(targetFrameRate,application,"set_targetFrameRate","System.Int32");
         M(raycast,physics,"Raycast","UnityEngine.Vector3","UnityEngine.Vector3","UnityEngine.RaycastHit&","System.Single","System.Int32","UnityEngine.QueryTriggerInteraction");
-        M(hitTransform,hit,"get_transform");M(sampleNav,nav,"SamplePosition","UnityEngine.Vector3","UnityEngine.AI.NavMeshHit&","System.Single","System.Int32");
+        M(sampleNav,nav,"SamplePosition","UnityEngine.Vector3","UnityEngine.AI.NavMeshHit&","System.Single","System.Int32");
         M(findById,object,"FindObjectFromInstanceID","System.Int32");
         M(setDestination,agent,"SetDestination","UnityEngine.Vector3");M(onNav,agent,"get_isOnNavMesh");M(agentSpeed,agent,"set_speed","System.Single");M(agentStop,agent,"set_stoppingDistance","System.Single");
         M(capsuleHeight,capsule,"set_height","System.Single");M(capsuleRadius,capsule,"set_radius","System.Single");M(capsuleCenter,capsule,"set_center","UnityEngine.Vector3");
-        M(getVelocity,controller,"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");
+        M(getVelocity,controller,"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");M(grannyShot,granny,"grannyHitByGun");
 #undef M
-        const Method *required[]={objectAlive,destroy,findObjects,goCtor,getTransform,componentTransform,componentGO,addComponent,setActive,getPosition,setPosition,getForward,getRight,setParent,setLocalPosition,setLocalScale,setEuler,meshCtor,setVertices,setNormals,setTriangles,setMesh,getMaterial,setMaterial,matCtor,matColor,cameraMain,raycast,hitTransform};
+        const Method *required[]={destroy,findObjects,goCtor,getTransform,componentTransform,componentGO,addComponent,getComponent,setActive,getPosition,setPosition,getForward,getRight,getParent,setParent,setLocalPosition,setLocalScale,setEuler,rotate,meshCtor,setVertices,setNormals,setTriangles,setMesh,setMaterial,matColor,raycast,fixedDelta,frameCount};
         for(auto m:required)if(!m){setStatus("Ошибка подключения Unity. Открой журнал мода.");return false;}
-        R.unityObject=object;R.nativeAlive=objectAlive;
+        R.unityObject=object;
         R.cachedPointer=R.class_get_field_from_name(object,"m_CachedPtr");
         if(!R.cachedPointer||R.field_get_offset(R.cachedPointer)!=0x10){setStatus("Мод не подключён: изменилось поле нативного объекта Unity");return false;}
         log("Unity object guard uses verified m_CachedPtr offset 0x10");
@@ -302,12 +329,20 @@ struct Unity {
     void scale(Obj t,V3 p){R.call(setLocalScale,t,{&p});}
     void euler(Obj t,V3 p){R.call(setEuler,t,{&p});}
     void active(Obj o,bool b){if(o)R.call(setActive,o,{&b});}
+    bool enabled(Obj behaviourObject){return getEnabled&&R.value<bool>(R.call(getEnabled,behaviourObject));}
+    void enable(Obj behaviourObject,bool b){if(behaviourObject&&setEnabled)R.call(setEnabled,behaviourObject,{&b});}
     void remove(Obj o){if(alive(o)){float delay=0;R.call(destroy,nullptr,{o,&delay});}}
     Obj newGO(const char *name){Obj o=R.pin(R.object_new(gameObject));R.call(goCtor,o,{R.string_new(name)});return o;}
-    Obj add(Obj go,Klass *k){return R.pin(R.call(addComponent,go,{R.type(k)}));}
+    Obj add(Obj go,Klass *k){return k?R.pin(R.call(addComponent,go,{R.type(k)})):nullptr;}
     Obj get(Obj go,Klass *k){return R.call(getComponent,go,{R.type(k)});}
     void parent(Obj t,Obj p){bool world=false;R.call(setParent,t,{p,&world});}
     Array *objects(Klass *k){return (Array *)R.call(findObjects,nullptr,{R.type(k)});}
+    std::string name(Obj o){return objectName&&alive(o)?R.text(R.call(objectName,o)):std::string("?");}
+    std::string path(Obj t){
+        std::string result;
+        for(int i=0;t&&i<12;i++){result=name(t)+(result.empty()?"":"/")+result;t=R.call(getParent,t);}
+        return result;
+    }
     bool ray(V3 start,V3 dir,float distance,Hit &h){
         dir=normal(dir);int mask=-1,ignore=1;h={};
         return R.value<bool>(R.call(raycast,nullptr,{&start,&dir,&h,&distance,&mask,&ignore}));
@@ -316,30 +351,28 @@ struct Unity {
         if(!h.collider||!findById)return nullptr;
         Obj collider=R.call(findById,nullptr,{&h.collider});return collider?trans(collider,true):nullptr;
     }
-    V3 navPoint(V3 p){NavHit h{};float range=3;int mask=-1;if(R.value<bool>(R.call(sampleNav,nullptr,{&p,&h,&range,&mask})))return h.point;return p;}
+    V3 navPoint(V3 p){NavHit h{};float range=3;int mask=-1;if(sampleNav&&R.value<bool>(R.call(sampleNav,nullptr,{&p,&h,&range,&mask})))return h.point;return p;}
     bool childOf(Obj t,Obj root){for(int i=0;t&&i<16;i++){if(t==root)return true;t=R.call(getParent,t);}return false;}
 } U;
 
-static Combat combat;
-static Obj player, playerTransform, cameraObject, cameraTransform, character, gun, gunTransform, cubeMesh;
-static Obj mats[8];
+// ---------------------------------------------------------------- game state
+static Combat combat;static bool combatReady=false;
+static Obj player,playerTransform,character,pivot,cameraObject,cameraTransform,aimTransform,gun,gunTransform,muzzle,cubeMesh;
+static Obj mats[10];
 static std::vector<Obj> worldRoots;
 static V3 waypoints[16];static int waypointCount=0;
-static float now=0,recoilPitch=0,recoilYaw=0,lastPitch=0,lastYaw=0,flash=0,grannyHP=100,grannyReset=0;
-static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnabled=false;
-static void resetNativeUI();
-static void updateNativeUI(bool inGame);
-static void inputNativeUI();
-static std::chrono::steady_clock::time_point sceneProbeAt{},sceneLogAt{};
-static std::string pendingScene;
-static bool sceneReady=false;
-static int burstLeft=0;static float hudTimer=0;
-static std::string notification="Открой магазин, выбери оружие и начни игру",killfeed;
-struct Bot {Obj root=nullptr,transform=nullptr,agent=nullptr,head=nullptr,legs[2]{};float hp=100,armor=50,nextShot=0,respawn=0,blind=0,lastSeen=-100;V3 target{};int weapon=17;};
+static float now=0,stepDt=1/60.f,recoilPitch=0,recoilYaw=0,lastPitch=0,lastYaw=0,flash=0,hurt=0,hitMarker=0,grannyHP=100,grannyReset=0;
+static float cameraSearchStart=0,nextCameraProbe=0,nextVisualProbe=0,nextFrameRate=0,muzzleUntil=0,baseFov=65;
+static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnabled=true,worldReady=false,visualsReady=false,deathHandled=false;
+static int burstLeft=0,lastGun=17,frameRate=60;
+static std::string notification="BUY — магазин, FIRE — огонь",killfeed;
+static float noticeUntil=0;
+struct Bot {Obj root=nullptr,transform=nullptr,agent=nullptr,head=nullptr,legs[2]{};float hp=100,armor=50,nextShot=0,respawn=0,blind=0,lastSeen=-100,firstSeen=-100,repath=0;V3 target{},routed{1e9f,0,0};int weapon=17;};
 static Bot bots[4];
 struct Effect {Obj root=nullptr,transform=nullptr;float expires=0;};static Effect effects[12];static int effectIndex=0;
 struct Grenade {Obj root=nullptr,transform=nullptr,renderer=nullptr;V3 velocity{},position{};int kind=8;float age=0,remaining=0,tick=0;bool exploded=false;};static Grenade grenades[8];
 
+static void notify(const std::string &text,float seconds=2.5f){notification=text;noticeUntil=now+seconds;}
 static void sound(int kind,float volume=1.f){
     if(!jvm||!overlay||!soundCallback)return;
     JNIEnv *env=nullptr;bool detach=false;
@@ -348,6 +381,51 @@ static void sound(int kind,float volume=1.f){
     if(env->ExceptionCheck())env->ExceptionClear();
     if(detach)jvm->DetachCurrentThread();
 }
+
+// ---------------------------------------------------------------- frame pacing
+// Granny runs physics at 1/75 s while rendering at the platform default rate; movement is
+// applied in FixedUpdate, so 5 physics steps land on 4 frames and the camera judders.
+// Time.fixedDeltaTime's setter is stripped, so the native TimeManager value is changed after
+// verifying the libunity getter instructions and the original rational value.
+static int64_t *fixedCount=nullptr;
+static bool timeManagerChecked=false;
+static bool findTimeManager(){
+    if(fixedCount||timeManagerChecked)return fixedCount;
+    timeManagerChecked=true;
+    if(!R.resolve_icall){log("Frame pacing: il2cpp_resolve_icall unavailable");return false;}
+    auto code=reinterpret_cast<const uint32_t*>(R.resolve_icall("UnityEngine.Time::get_fixedDeltaTime"));
+    if(!code){log("Frame pacing: fixedDeltaTime icall not registered");return false;}
+    if(code[0]!=target::fixedGetter[0]||(code[1]>>26)!=0x25||code[2]!=target::fixedGetter[2]||code[3]!=target::fixedGetter[3]){
+        log("Frame pacing: unexpected fixedDeltaTime getter code; physics rate unchanged");return false;
+    }
+    int64_t offset=int64_t(code[1]&0x3ffffff);if(offset&0x2000000)offset-=0x4000000;
+    auto getter=reinterpret_cast<const uint32_t*>(reinterpret_cast<const char*>(code+1)+offset*4);
+    if(getter[0]!=target::timeManagerGetter){log("Frame pacing: unexpected GetTimeManager code");return false;}
+    auto manager=reinterpret_cast<char*(*)()>(const_cast<uint32_t*>(getter))();
+    if(!manager)return false;
+    auto count=reinterpret_cast<int64_t*>(manager+0x50);auto rate=reinterpret_cast<uint32_t*>(manager+0x58);
+    if(rate[0]!=target::fixedRate||rate[1]!=1||count[0]<=0||count[0]>target::fixedRate){
+        std::ostringstream s;s<<"Frame pacing: unexpected fixed step "<<count[0]<<"/"<<rate[0]<<"/"<<rate[1];log(s.str());return false;
+    }
+    fixedCount=count;
+    std::ostringstream s;s<<"Frame pacing: TimeManager fixed step "<<count[0]<<"/"<<rate[0]<<" ("<<(count[0]==target::originalFixedCount?"original 1/75 s":"already changed")<<")";log(s.str());
+    return true;
+}
+static void applyFrameRate(bool force){
+    if(!force&&now<nextFrameRate)return;
+    nextFrameRate=now+4;
+    if(U.targetFrameRate){int fps=frameRate;R.call(U.targetFrameRate,nullptr,{&fps});}
+    if(findTimeManager()){
+        int64_t wanted=target::fixedRate/frameRate;
+        if(*fixedCount!=wanted){
+            *fixedCount=wanted;
+            float check=R.value<float>(R.call(U.fixedDelta));
+            std::ostringstream s;s<<"Frame pacing: "<<frameRate<<" FPS, physics step now "<<check<<" s";log(s.str());
+        }
+    }
+}
+
+// ---------------------------------------------------------------- materials and models
 static Obj makeMesh(){
     TraceScope trace("mesh allocation");
     static const V3 v[]={
@@ -361,48 +439,79 @@ static Obj makeMesh(){
     V3 normals[24];int triangles[36];
     for(int f=0;f<6;f++){for(int j=0;j<4;j++)normals[f*4+j]=faceNormals[f];int a=f*4;int t[]={a,a+1,a+2,a,a+2,a+3};memcpy(triangles+f*6,t,sizeof(t));}
     auto vertices=(Array*)R.pin(R.array_new(U.vec,24)),ns=(Array*)R.pin(R.array_new(U.vec,24)),ts=(Array*)R.pin(R.array_new(U.integer,36));
-    if(!vertices||!ns||!ts){setStatus("Не удалось выделить данные модели");return nullptr;}
+    if(!vertices||!ns||!ts){log("Model data allocation failed");return nullptr;}
     memcpy(vertices->data,v,sizeof(v));memcpy(ns->data,normals,sizeof(normals));memcpy(ts->data,triangles,sizeof(triangles));
     Obj mesh=R.pin(R.object_new(U.mesh));R.call(U.meshCtor,mesh);
     R.call(U.setVertices,mesh,{vertices});R.call(U.setNormals,mesh,{ns});R.call(U.setTriangles,mesh,{ts});return mesh;
 }
 static bool makeMaterials(){
     TraceScope trace("scene materials");
-    auto renderers=U.objects(U.renderer);Obj source=nullptr;
-    if(renderers&&renderers->length<10000){auto objects=(Obj *)renderers->data;for(size_t i=0;i<renderers->length;i++){source=R.call(U.getMaterial,objects[i]);if(U.alive(source))break;}}
-    if(!source){notification="Не найден материал сцены";return false;}
-    const Color colors[]={{.13f,.15f,.17f,1},{.42f,.2f,.07f,1},{.65f,.7f,.75f,1},{.15f,.3f,.45f,1},{.2f,.25f,.13f,1},{1,.68f,.12f,1},{.5f,.5f,.5f,1},{1,.22f,.025f,1}};
-    for(int i=0;i<8;i++){mats[i]=R.pin(R.object_new(U.material));R.call(U.matCtor,mats[i],{source});R.call(U.matTexture,mats[i],{nullptr});Color c=colors[i];R.call(U.matColor,mats[i],{&c});}
+    // Granny's house is dark and most scene materials use Mobile/Diffuse, which has no _Color.
+    // These shaders are present in this build; self-illumination keeps models readable at night.
+    const char *shaders[]={"Legacy Shaders/Self-Illumin/Diffuse","Legacy Shaders/Diffuse","Sprites/Default","Hidden/Internal-Colored"};
+    Obj chosen=nullptr;std::string chosenName;
+    for(auto name:shaders){
+        if(!U.shaderFind||!U.matShaderCtor)break;
+        Obj shader=R.call(U.shaderFind,nullptr,{R.string_new(name)});
+        if(!U.alive(shader))continue;
+        Obj probe=R.object_new(U.material);R.call(U.matShaderCtor,probe,{shader});
+        bool hasColor=!U.matHasProperty||R.value<bool>(R.call(U.matHasProperty,probe,{R.string_new("_Color")}));
+        if(hasColor){chosen=shader;chosenName=name;break;}
+    }
+    const Color colors[]={{.10f,.11f,.12f,1},{.45f,.23f,.09f,1},{.58f,.61f,.65f,1},{.16f,.30f,.58f,1},{.60f,.47f,.27f,1},{1,.82f,.28f,1},{.62f,.62f,.64f,1},{1,.36f,.05f,1},{.82f,.62f,.48f,1},{.24f,.28f,.15f,1}};
+    Obj source=nullptr;
+    if(!chosen){
+        auto renderers=U.objects(U.renderer);
+        if(renderers&&renderers->length<10000){auto objects=(Obj *)renderers->data;for(size_t i=0;i<renderers->length;i++){source=R.call(U.getMaterial,objects[i]);if(U.alive(source))break;}}
+        if(!U.alive(source)||!U.matCtor){log("No material source for mod models");return false;}
+        chosenName="copy of scene material";
+    }
+    for(int i=0;i<10;i++){
+        mats[i]=R.pin(R.object_new(U.material));
+        if(chosen)R.call(U.matShaderCtor,mats[i],{chosen});else{R.call(U.matCtor,mats[i],{source});R.call(U.matTexture,mats[i],{nullptr});}
+        Color c=colors[i];R.call(U.matColor,mats[i],{&c});
+    }
+    log("Model material: "+chosenName);
     cubeMesh=makeMesh();return cubeMesh;
 }
 static Obj box(Obj parent,const char *name,V3 position,V3 size,int material,int layer=0){
+    if(!cubeMesh)return nullptr;
     Obj root=U.newGO(name),t=R.pin(U.trans(root));if(parent)U.parent(t,parent);
     U.local(t,position);U.scale(t,size);R.call(U.setLayer,root,{&layer});
     Obj filter=U.add(root,U.meshFilter),renderer=U.add(root,U.meshRenderer);
     R.call(U.setMesh,filter,{cubeMesh});R.call(U.setMaterial,renderer,{mats[material]});return root;
 }
 static void weaponModel(){
-    TraceScope trace("weapon model replacement");
-    if(!cubeMesh||!U.alive(cameraTransform)){log("Weapon model deferred: scene is not ready");return;}
-    Obj previous=gun;
-    Obj previousTransform=gunTransform;
-    gun=U.newGO("CSGO_Weapon");worldRoots.push_back(gun);gunTransform=R.pin(U.trans(gun));U.parent(gunTransform,cameraTransform);
-    if(!U.alive(gun)||!U.alive(gunTransform)){gun=previous;gunTransform=previousTransform;notification="Не удалось создать оружие";return;}
-    struct Replace {
-        Obj old;
-        ~Replace(){if(old){U.remove(old);worldRoots.erase(std::remove(worldRoots.begin(),worldRoots.end(),old),worldRoots.end());}}
-    } replacement{previous};
-    U.local(gunTransform,{.24f,-.2f,.46f});
-    const Weapon &w=weapons[combat.weapon];float body=w.kind==0?.2f:(w.kind==3?.47f:.34f);
-    if(w.kind>=8){box(gunTransform,"Grenade",{0,-.015f,.05f},{.07f,.12f,.07f},w.kind==11?1:4,2);box(gunTransform,"Pin",{0,.055f,.05f},{.03f,.02f,.035f},2,2);return;}
-    if(w.kind==6){box(gunTransform,"Knife",{0,0,.15f},{.026f,.008f,.3f},2,2);box(gunTransform,"Handle",{0,0,-.065f},{.04f,.035f,.12f},0,2);return;}
-    box(gunTransform,"Receiver",{0,0,body*.15f},{.065f,.065f,body},0,2);
-    box(gunTransform,"Barrel",{0,.022f,body*.75f},{.026f,.025f,w.silenced?.22f:.15f},w.silenced?0:2,2);
-    box(gunTransform,"Grip",{0,-.065f,-body*.24f},{.043f,.13f,.058f},combat.weapon==17?1:0,2);
-    box(gunTransform,"Magazine",{0,-.055f,body*.08f},{.038f,w.kind==5?.1f:.13f,w.kind==5?.12f:.045f},0,2);
-    if(w.kind>0&&w.kind<6){box(gunTransform,"Stock",{0,-.015f,-body*.7f},{.045f,.075f,.15f},combat.weapon==17?1:0,2);box(gunTransform,"Foregrip",{0,-.013f,body*.48f},{.06f,.075f,.14f},combat.weapon==17?1:0,2);}
-    if(w.scoped){box(gunTransform,"Optic",{0,.075f,.025f},{.06f,.055f,w.kind==3?.18f:.07f},0,2);box(gunTransform,"Lens",{0,.075f,w.kind==3?.12f:.065f},{.045f,.04f,.006f},3,2);}
-    if(combat.weapon==9){Obj second=box(gunTransform,"Second pistol",{-.34f,0,.025f},{.065f,.065f,.22f},0,2);box(U.trans(second),"Second grip",{0,-.8f,-.2f},{.7f,1.8f,.3f},0,2);}
+    TraceScope trace("weapon model");
+    if(!cubeMesh||!U.alive(aimTransform)){log("Weapon model deferred: no aim transform");return;}
+    if(U.alive(gun))U.remove(gun);
+    worldRoots.erase(std::remove(worldRoots.begin(),worldRoots.end(),gun),worldRoots.end());
+    gun=U.newGO("CSGO_Weapon");worldRoots.push_back(gun);gunTransform=R.pin(U.trans(gun));U.parent(gunTransform,aimTransform);
+    if(!U.alive(gun)||!U.alive(gunTransform)){gun=gunTransform=nullptr;notify("Не удалось создать оружие");return;}
+    U.local(gunTransform,{.22f,-.2f,.42f});
+    const Weapon &w=weapons[combat.weapon];
+    int furniture=combat.weapon==17||combat.weapon==21?1:(w.kind==3&&combat.weapon==25?9:0);
+    float body=w.kind==0?.2f:(w.kind==3?.5f:.36f);
+    // Sleeve and hands make the view model read as held rather than floating.
+    box(gunTransform,"Sleeve",{.02f,-.10f,-.16f},{.09f,.09f,.26f},0,2);
+    box(gunTransform,"Hand",{0,-.075f,-body*.22f},{.06f,.07f,.08f},8,2);
+    if(w.kind>=8){box(gunTransform,"Grenade",{0,-.015f,.05f},{.07f,.11f,.07f},w.kind==11?7:(w.kind==9?2:9),2);box(gunTransform,"Spoon",{.03f,.04f,.05f},{.012f,.05f,.03f},2,2);muzzle=nullptr;return;}
+    if(w.kind==6){box(gunTransform,"Blade",{0,.01f,.16f},{.012f,.045f,.26f},2,2);box(gunTransform,"Handle",{0,0,-.03f},{.03f,.04f,.11f},0,2);muzzle=nullptr;return;}
+    if(w.kind==7){box(gunTransform,"Taser",{0,0,.04f},{.05f,.07f,.16f},5,2);muzzle=box(gunTransform,"Spark",{0,0,.14f},{.03f,.03f,.03f},5,2);return;}
+    box(gunTransform,"Receiver",{0,0,body*.15f},{.06f,.07f,body},0,2);
+    box(gunTransform,"Barrel",{0,.02f,body*.72f},{.022f,.022f,w.silenced?.24f:.16f},0,2);
+    box(gunTransform,"Grip",{0,-.07f,-body*.2f},{.04f,.12f,.055f},furniture,2);
+    box(gunTransform,"Magazine",{0,-.07f,body*.1f},{.035f,w.kind==5?.09f:.13f,w.kind==5?.13f:.05f},0,2);
+    if(w.kind>0&&w.kind<6){
+        box(gunTransform,"Stock",{0,-.015f,-body*.62f},{.045f,.075f,.17f},furniture,2);
+        box(gunTransform,"Handguard",{0,-.005f,body*.48f},{.055f,.06f,.15f},furniture,2);
+        box(gunTransform,"LeftHand",{-.02f,-.05f,body*.5f},{.06f,.06f,.08f},8,2);
+    }
+    if(w.scoped){box(gunTransform,"Scope",{0,.07f,.03f},{.05f,.05f,w.kind==3?.22f:.09f},0,2);box(gunTransform,"Lens",{0,.07f,w.kind==3?.14f:.08f},{.04f,.04f,.006f},3,2);}
+    else box(gunTransform,"FrontSight",{0,.045f,body*.62f},{.01f,.025f,.01f},0,2);
+    if(combat.weapon==9){box(gunTransform,"SecondPistol",{-.34f,0,.025f},{.06f,.07f,.2f},0,2);box(gunTransform,"SecondHand",{-.34f,-.075f,-.03f},{.06f,.07f,.08f},8,2);}
+    muzzle=box(gunTransform,"MuzzleFlash",{0,.02f,body*.72f+(w.silenced?.13f:.1f)},{.06f,.06f,.04f},5,2);
+    if(muzzle)U.active(muzzle,false);
 }
 static V3 spawnPosition(int i){
     V3 p=waypointCount?waypoints[(i*3+2)%waypointCount]:U.pos(playerTransform)+V3{float(4+i),0,3};
@@ -410,62 +519,103 @@ static V3 spawnPosition(int i){
 }
 static void spawnBots(){
     TraceScope trace("spawn four bots");
-    botsEnabled=true;
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(U.alive(b.root))U.remove(b.root);b={};b.weapon=(int[]){17,18,11,7}[i];
         b.root=U.newGO("CSGO_Bot");U.active(b.root,false);worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
-        box(b.transform,"Torso",{0,1.05f,0},{.46f,.6f,.28f},i%2?4:3);
-        b.head=R.pin(U.trans(box(b.transform,"Helmet",{0,1.58f,0},{.31f,.31f,.3f},0)));
-        for(int j=0;j<2;j++){b.legs[j]=R.pin(U.trans(box(b.transform,"Leg",{j?.14f:-.14f,.43f,0},{.16f,.78f,.19f},0)));box(b.transform,"Arm",{j?.31f:-.31f,1.09f,.14f},{.14f,.45f,.17f},i%2?4:3);}
-        box(b.transform,"Rifle",{.2f,1.11f,.33f},{.07f,.075f,.48f},0);
+        int team=i%2?4:3;
+        box(b.transform,"Torso",{0,1.05f,0},{.46f,.6f,.28f},team);
+        box(b.transform,"Face",{0,1.55f,.02f},{.24f,.26f,.24f},8);
+        b.head=R.pin(U.trans(box(b.transform,"Helmet",{0,1.66f,0},{.3f,.14f,.3f},team==3?0:9)));
+        for(int j=0;j<2;j++){b.legs[j]=R.pin(U.trans(box(b.transform,"Leg",{j?.13f:-.13f,.43f,0},{.16f,.78f,.19f},0)));box(b.transform,"Arm",{j?.31f:-.31f,1.09f,.14f},{.13f,.45f,.16f},team);}
+        box(b.transform,"Rifle",{.2f,1.11f,.33f},{.07f,.075f,.5f},0);
         Obj collider=U.add(b.root,U.capsule);float height=1.85f,radius=.32f;V3 center{0,.925f,0};R.call(U.capsuleHeight,collider,{&height});R.call(U.capsuleRadius,collider,{&radius});R.call(U.capsuleCenter,collider,{&center});
-        b.agent=U.add(b.root,U.agent);float speed=2.5f,stop=4;R.call(U.agentSpeed,b.agent,{&speed});R.call(U.agentStop,b.agent,{&stop});
+        b.agent=U.add(b.root,U.agent);float speed=2.6f,stop=4;R.call(U.agentSpeed,b.agent,{&speed});R.call(U.agentStop,b.agent,{&stop});
         b.hp=100;b.armor=50;b.nextShot=now+6+i*.5f;b.target=spawnPosition(i+1);
         U.active(b.root,true);
     }
-    notification="Добавлены 4 тестовых бота";
+    notify("Боты: 4 противника на карте");
 }
-static bool resetWorld(Obj self){
-    Obj readyCharacter=R.field<Obj>(self,U.fps,"character");
-    Obj playerGO=R.call(U.componentGO,self);
-    if(!U.alive(readyCharacter)&&U.alive(playerGO))readyCharacter=U.get(playerGO,U.controller);
-    Obj pivot=R.field<Obj>(self,U.fps,"cameraPivot");
-    Obj pivotGO=U.alive(pivot)?R.call(U.componentGO,pivot):nullptr;
-    Obj readyCamera=U.alive(pivotGO)?U.get(pivotGO,U.camera):nullptr;
-    if(!U.alive(readyCamera)&&U.alive(pivotGO))readyCamera=R.call(U.getComponentInChildren,pivotGO,{R.type(U.camera)});
-    if(!U.alive(readyCamera))readyCamera=R.call(U.cameraMain);
-    bool characterReady=U.alive(readyCharacter),cameraReady=U.alive(readyCamera);
-    if(!characterReady||!cameraReady){
-        std::string reason=std::string(characterReady?"character ready":"character missing")+"; "+(cameraReady?"camera ready":"camera missing");
-        auto time=std::chrono::steady_clock::now();
-        if(reason!=pendingScene||time>=sceneLogAt){
-            std::ostringstream details;details<<"Scene pending: "<<reason<<"; player class="<<R.name(R.object_get_class(self))
-                <<"; player native=0x"<<std::hex<<R.nativePointer(self)<<"; character="<<readyCharacter
-                <<" native=0x"<<R.nativePointer(readyCharacter)<<"; camera="<<readyCamera<<" native=0x"<<R.nativePointer(readyCamera)<<"; pivot="<<pivot;
-            log(details.str());pendingScene=reason;sceneLogAt=time+std::chrono::seconds(5);
-        }
-        return false;
+static void removeBots(){for(auto &b:bots){if(U.alive(b.root))U.remove(b.root);b={};}}
+
+// ---------------------------------------------------------------- scene discovery
+static Obj findPlayerCamera(std::string &how){
+    // Granny 1.8.12 renders through Player/CameraShakeAnim/CameraPivot/Main Camera/Camera.
+    // The MainCamera-tagged parent camera is disabled, so Camera.main is null during play.
+    if(U.alive(pivot)&&U.componentsInChildren){
+        auto list=(Array*)R.call(U.componentsInChildren,pivot,{R.type(U.camera)});
+        if(list&&list->length<64){auto items=(Obj*)list->data;for(size_t i=0;i<list->length;i++)if(U.alive(items[i])&&U.enabled(items[i])){how="enabled camera under cameraPivot";return items[i];}}
     }
-    TraceScope trace("initialize gameplay scene from player components");
-    pendingScene.clear();sceneReady=false;
-    resetNativeUI();
-    for(auto root:worldRoots)U.remove(root);worldRoots.clear();R.clearRoots();
-    player=R.pin(self);playerTransform=R.pin(U.trans(self,true));character=R.pin(readyCharacter);
-    cameraObject=R.pin(readyCamera);cameraTransform=R.pin(U.trans(cameraObject,true));
-    combat_init(&combat,weapons,WEAPON_COUNT);now=0;hudTimer=0;flash=0;grannyHP=100;grannyReset=0;
-    combat.owned[17]=1;combat.weapon=17;
-    scoped=burstMode=wasCaught=false;burstLeft=0;recoilPitch=recoilYaw=lastPitch=lastYaw=0;
-    gun=gunTransform=cubeMesh=nullptr;for(auto &b:bots)b={};for(auto &e:effects)e={};for(auto &g:grenades)g={};
-    waypointCount=0;
-    Obj grannyGO=R.field<Obj>(self,U.fps,"granny");Obj granny=grannyGO?U.get(grannyGO,U.granny):nullptr;
-    if(granny){for(int i=1;i<=16;i++){std::string n="nav"+std::to_string(i);Obj t=R.field<Obj>(granny,U.granny,n.c_str());if(U.alive(t))waypoints[waypointCount++]=U.pos(t);}}
-    if(!U.alive(playerTransform)||!U.alive(cameraTransform)||!makeMaterials()){notification="Ожидание камеры и материалов";return false;}
-    float fov=75,clip=.04f;R.call(U.setFov,cameraObject,{&fov});R.call(U.setClip,cameraObject,{&clip});
-    weaponModel();
-    if(!U.alive(gun)||!U.alive(gunTransform)){log("Scene initialization waiting for weapon model");return false;}
-    if(botsEnabled)spawnBots();setStatus("Мод подключён");sceneReady=true;
-    log("Scene initialized; AK-47 equipped; waypoints="+std::to_string(waypointCount));return true;
+    if(U.camerasCount&&U.allCameras){
+        int count=R.value<int>(R.call(U.camerasCount));
+        if(count>0&&count<64){
+            auto list=(Array*)R.array_new(U.camera,count);
+            if(list){R.call(U.allCameras,nullptr,{list});auto items=(Obj*)list->data;
+                for(size_t i=0;i<list->length;i++)if(U.alive(items[i])&&U.childOf(U.trans(items[i],true),playerTransform)){how="enabled camera inside player";return items[i];}}
+        }
+    }
+    Obj main=U.cameraMain?R.call(U.cameraMain):nullptr;
+    if(U.alive(main)){how="Camera.main";return main;}
+    return nullptr;
 }
+static void releaseWorld(){
+    for(auto root:worldRoots)U.remove(root);worldRoots.clear();
+    R.release(worldPins);
+    player=playerTransform=character=pivot=cameraObject=cameraTransform=aimTransform=gun=gunTransform=muzzle=cubeMesh=nullptr;
+    for(auto &m:mats)m=nullptr;for(auto &b:bots)b={};for(auto &e:effects)e={};for(auto &g:grenades)g={};
+    worldReady=visualsReady=false;
+}
+struct MoveState {V3 velocity{};float vy=0,air=0,budget=0;bool grounded=true,jumping=false;float jumpBuffer=-1;int frames=0;};
+static MoveState mv;
+static void resetMovement(){mv=MoveState{};}
+static void adoptController(Obj self){
+    TraceScope trace("adopt gameplay controller");
+    releaseWorld();
+    player=R.pin(self);playerTransform=R.pin(U.trans(self,true));
+    character=R.field<Obj>(self,U.fps,"character");
+    Obj playerGO=R.call(U.componentGO,self);
+    if(!U.alive(character)&&U.alive(playerGO))character=U.get(playerGO,U.controller);
+    character=R.pin(character);pivot=R.pin(R.field<Obj>(self,U.fps,"cameraPivot"));
+    cameraSearchStart=now;nextCameraProbe=0;nextVisualProbe=0;
+    waypointCount=0;
+    Obj grannyGO=R.field<Obj>(self,U.fps,"granny");Obj granny=U.alive(grannyGO)?U.get(grannyGO,U.granny):nullptr;
+    if(granny){for(int i=1;i<=16;i++){std::string n="nav"+std::to_string(i);Obj t=R.field<Obj>(granny,U.granny,n.c_str());if(U.alive(t))waypoints[waypointCount++]=U.pos(t);}}
+    if(!combatReady){combat_init(&combat,weapons,WEAPON_COUNT);combat.owned[17]=1;combat.weapon=17;combat.helmet=1;combatReady=true;}
+    else{
+        // A new Granny day keeps the bought inventory, like the next round in CS:GO.
+        combat.health=100;combat.armor=std::max(combat.armor,0);combat.reload_left=0;combat.cooldown=0;combat.trigger_down=0;
+        for(int i=0;i<WEAPON_COUNT;i++)if(combat.owned[i]&&weapons[i].kind<8){combat.ammo[i]=weapons[i].magazine;combat.reserve[i]=weapons[i].reserve;}
+    }
+    scoped=burstMode=wasCaught=deathHandled=false;burstLeft=0;recoilPitch=recoilYaw=lastPitch=lastYaw=0;flash=hurt=hitMarker=0;grannyHP=100;grannyReset=0;
+    resetMovement();
+    std::ostringstream s;s<<"Controller adopted: player="<<U.path(playerTransform)<<"; character="<<(U.alive(character)?"ok":"missing")
+        <<"; cameraPivot="<<(U.alive(pivot)?U.path(pivot):"missing")<<"; waypoints="<<waypointCount;
+    log(s.str());
+    applyFrameRate(true);
+}
+static void prepareWorld(){
+    if(now<nextVisualProbe)return;
+    nextVisualProbe=now+.5f;
+    if(!U.alive(cameraObject)&&now>=nextCameraProbe){
+        nextCameraProbe=now+1;std::string how;Obj cam=findPlayerCamera(how);
+        if(cam){
+            cameraObject=R.pin(cam);cameraTransform=R.pin(U.trans(cam,true));aimTransform=cameraTransform;
+            if(U.getFov)baseFov=clamp(R.value<float>(R.call(U.getFov,cam)),30,100);
+            log("Camera: "+U.path(cameraTransform)+" via "+how);
+            if(visualsReady)weaponModel();
+        }
+    }
+    if(!U.alive(aimTransform)&&now-cameraSearchStart>2.5f&&U.alive(pivot)){
+        aimTransform=pivot;log("Camera not found yet; aiming from cameraPivot "+U.path(pivot));
+    }
+    if(!U.alive(aimTransform))return;
+    if(!worldReady){worldReady=true;log("Gameplay ready; weapon "+std::string(weapons[combat.weapon].name));}
+    if(!visualsReady){
+        visualsReady=makeMaterials();
+        if(visualsReady){weaponModel();if(botsEnabled)spawnBots();log("Scene models ready");}
+    }
+}
+
+// ---------------------------------------------------------------- combat
 static bool smokeBetween(V3 a,V3 b){
     V3 delta=b-a;float n=dot(delta,delta);if(n<.01f)return false;
     for(auto &g:grenades)if(g.root&&g.exploded&&g.kind==10&&g.remaining>0){float t=clamp(dot(g.position-a,delta)/n,0,1);if(length(a+delta*t-g.position)<2)return true;}
@@ -481,70 +631,83 @@ static void botDamage(Bot &b,float damage,bool head){
     if(b.hp<=0)return;
     if(head)damage*=4;
     if(b.armor>0){float absorb=std::min(b.armor,damage*.35f);b.armor-=absorb;damage-=absorb;}
-    b.hp-=damage;
-    if(b.hp<=0){U.active(b.root,false);b.respawn=now+8;combat_reward(&combat,300);killfeed=std::string(weapons[combat.weapon].name)+(head?" • HEADSHOT":" • BOT");notification="Бот устранён: +$300";}
+    b.hp-=damage;hitMarker=.18f;
+    if(b.hp<=0){U.active(b.root,false);b.respawn=now+8;combat_reward(&combat,300);killfeed=std::string(weapons[combat.weapon].name)+(head?"  >  HEADSHOT":"  >  BOT");noticeUntil=now+3;}
 }
 static Obj grannyObject(){Obj go=R.field<Obj>(player,U.fps,"granny");return U.alive(go)?U.get(go,U.granny):nullptr;}
+static void grannyDamage(Obj ai,float damage){
+    grannyHP-=damage;hitMarker=.18f;
+    if(grannyHP<=0&&now>grannyReset){R.call(U.grannyShot,ai);combat_reward(&combat,300);grannyReset=now+10;grannyHP=100;killfeed="GRANNY  >  +$300";noticeUntil=now+3;}
+}
 static void hitDamage(Hit &h,float damage){
     Obj t=U.hitTrans(h);
-    for(auto &b:bots)if(b.hp>0&&U.childOf(t,b.transform)){botDamage(b,damage,h.point.y-U.pos(b.transform).y>1.35f);return;}
-    Obj ai=grannyObject();if(ai){Obj gt=U.trans(ai,true);if(U.childOf(t,gt)){
-        grannyHP-=damage*(h.point.y-U.pos(gt).y>1.5f?4:1);
-        if(grannyHP<=0&&now>grannyReset){R.call(R.method(U.granny,"grannyHitByGun",{}),ai);combat_reward(&combat,300);grannyReset=now+10;grannyHP=100;killfeed="GRANNY • +$300";}
-    }}
+    for(auto &b:bots)if(b.hp>0&&U.childOf(t,b.transform)){botDamage(b,damage,h.point.y-U.pos(b.transform).y>1.45f);return;}
+    Obj ai=grannyObject();if(ai){Obj gt=U.trans(ai,true);if(U.childOf(t,gt))grannyDamage(ai,damage*(h.point.y-U.pos(gt).y>1.5f?4:1));}
 }
 static void tracer(V3 from,V3 to){
     Effect &e=effects[(effectIndex++)%12];
-    if(!e.root){e.root=box(nullptr,"CSGO_Tracer",{},V3{.012f,.012f,1},5,2);e.transform=R.pin(U.trans(e.root));worldRoots.push_back(e.root);}
+    if(!U.alive(e.root)){e.root=box(nullptr,"CSGO_Tracer",{},V3{.012f,.012f,1},5,2);if(!e.root)return;e.transform=R.pin(U.trans(e.root));worldRoots.push_back(e.root);}
     U.active(e.root,true);U.position(e.transform,(from+to)*.5f);U.scale(e.transform,{.012f,.012f,length(to-from)});R.call(U.lookAt,e.transform,{&to});e.expires=now+.045f;
 }
 static void throwGrenade(int kind){
     Grenade *slot=nullptr;for(auto &g:grenades)if(!g.root){slot=&g;break;}
-    if(!slot){notification="На карте уже 8 гранат";return;}
-    *slot={};slot->kind=kind;slot->position=U.pos(cameraTransform)+U.forward(cameraTransform)*.45f;
-    slot->velocity=U.forward(cameraTransform)*8+V3{0,3,0};
-    slot->root=box(nullptr,"CSGO_Grenade",slot->position,{.12f,.18f,.12f},kind==11?1:4,2);
+    if(!slot){notify("На карте уже 8 гранат");return;}
+    *slot={};slot->kind=kind;slot->position=U.pos(aimTransform)+U.forward(aimTransform)*.45f;
+    slot->velocity=U.forward(aimTransform)*9+V3{0,2.5f,0}+mv.velocity*.5f;
+    slot->root=box(nullptr,"CSGO_Grenade",slot->position,{.1f,.15f,.1f},kind==11?7:9,2);
+    if(!slot->root){*slot={};return;}
     slot->transform=R.pin(U.trans(slot->root));slot->renderer=U.get(slot->root,U.meshRenderer);worldRoots.push_back(slot->root);
+}
+static void selectWeapon(int id){
+    if(!combat_select(&combat,WEAPON_COUNT,id))return;
+    if(weapons[id].kind<8)lastGun=id;
+    scoped=burstMode=false;burstLeft=0;weaponModel();
 }
 static void shot(){
     const Weapon &w=weapons[combat.weapon];sound(std::min(w.kind,7),w.silenced?.28f:1.f);
-    if(w.kind>=8){throwGrenade(w.kind);return;}
-    V3 origin=U.pos(cameraTransform),forward=U.forward(cameraTransform),right=U.right(cameraTransform),up=cross(forward,right);
-    V3 velocity=R.value<V3>(R.call(U.getVelocity,character));
-    float spread=w.spread+(length(V3{velocity.x,0,velocity.z})>1?1.8f:0.f)+std::min(combat.shots*.12f,2.0f);
-    if(!R.field<bool>(player,U.fps,"PlayerIsGrounded"))spread+=3;
+    if(w.kind>=8){
+        throwGrenade(w.kind);
+        // Thrown grenades leave the inventory and the previous gun comes back, as in CS:GO.
+        combat.owned[combat.weapon]=0;selectWeapon(combat.owned[lastGun]?lastGun:34);
+        return;
+    }
+    V3 origin=U.pos(aimTransform),forward=U.forward(aimTransform),right=U.right(aimTransform),up=cross(forward,right);
+    float moving=length(flat(mv.velocity));
+    float spread=w.spread+(moving>1?1.8f*clamp(moving/5,0,1):0.f)+std::min(combat.shots*.12f,2.0f);
+    if(!mv.grounded)spread+=3;
     if(R.field<bool>(player,U.fps,"playerCrouch"))spread*=.6f;
     if(scoped)spread*=.25f;else if(w.kind==3)spread+=3;
-    if(combat.weapon==33&&combat.shots>12)spread=.45f;
     float range=w.kind==6?2.2f:(w.kind==7?3.4f:150.f);
     for(int i=0;i<w.pellets;i++){
         V3 dir=normal(forward+right*((random01()-.5f)*spread*.0349f)+up*((random01()-.5f)*spread*.0349f));
         Hit h;V3 end=origin+dir*range;
         if(U.ray(origin,dir,range,h)){end=h.point;float damage=w.damage;if(w.kind==4)damage*=clamp(1-h.distance/22.f,.15f,1);hitDamage(h,damage);}
-        if(w.kind<6)tracer(origin+forward*.3f,end);
+        if(w.kind<6)tracer(origin+forward*.3f-up*.08f+right*.08f,end);
     }
+    if(muzzle){U.active(muzzle,true);muzzleUntil=now+.04f;}
     recoilPitch=std::min(recoilPitch+w.kick,12.f);
     recoilYaw+=w.kick*.45f*std::sin(combat.shots*1.7f);
-    notification=w.name;
 }
 static void radiusDamage(V3 p,float radius,float damage){
     for(auto &b:bots)if(b.hp>0){V3 target=U.pos(b.transform)+V3{0,1,0};float d=length(target-p);if(d<radius&&visible(p+V3{0,.15f,0},target,b.transform))botDamage(b,damage*(1-d/radius),false);}
-    Obj ai=grannyObject();if(ai){V3 target=U.pos(U.trans(ai,true))+V3{0,1,0};if(length(target-p)<radius){grannyHP-=damage;if(grannyHP<=0&&now>grannyReset){R.call(R.method(U.granny,"grannyHitByGun",{}),ai);combat_reward(&combat,300);grannyReset=now+10;grannyHP=100;}}}
+    Obj ai=grannyObject();if(ai){V3 target=U.pos(U.trans(ai,true))+V3{0,1,0};if(length(target-p)<radius)grannyDamage(ai,damage);}
+    float self=length(U.pos(playerTransform)+V3{0,1,0}-p);if(self<radius*.7f){combat_damage(&combat,int(damage*.5f*(1-self/radius)));hurt=.5f;}
 }
 static void updateGrenades(float dt){
     for(auto &g:grenades)if(g.root){
+        if(!U.alive(g.root)){g={};continue;}
         g.age+=dt;
         if(!g.exploded){
             g.velocity.y-=9.81f*dt;V3 step=g.velocity*dt;Hit hit;
             bool collision=U.ray(g.position,step,length(step)+.06f,hit);
-            if(collision){g.position=hit.point+hit.normal*.08f;g.velocity=(g.velocity-hit.normal*(2*dot(g.velocity,hit.normal)))*.5f;}else g.position=g.position+step;
+            if(collision){g.position=hit.point+hit.normal*.08f;g.velocity=(g.velocity-hit.normal*(2*dot(g.velocity,hit.normal)))*.45f;}else g.position=g.position+step;
             U.position(g.transform,g.position);
-            if(g.age<1.5f&&!(g.kind==11&&collision&&g.age>.2f))continue;
+            if(g.age<1.6f&&!(g.kind==11&&collision&&g.age>.2f))continue;
             g.exploded=true;
-            if(g.kind==8){radiusDamage(g.position,6,140);U.scale(g.transform,{1.2f,1.2f,1.2f});R.call(U.setMaterial,g.renderer,{mats[5]});g.remaining=.12f;}
+            if(g.kind==8){radiusDamage(g.position,6,140);U.scale(g.transform,{1.2f,1.2f,1.2f});R.call(U.setMaterial,g.renderer,{mats[7]});g.remaining=.12f;sound(3,.9f);}
             if(g.kind==9){
                 for(auto &b:bots)if(b.hp>0&&length(U.pos(b.transform)-g.position)<15&&visible(g.position,U.pos(b.transform)+V3{0,1.5f,0},b.transform))b.blind=now+4;
-                V3 d=g.position-U.pos(cameraTransform);if(length(d)<15&&visible(U.pos(cameraTransform),g.position,nullptr))flash=clamp(dot(normal(d),U.forward(cameraTransform))*.8f+.2f,0,1);
+                V3 d=g.position-U.pos(aimTransform);if(length(d)<15&&visible(U.pos(aimTransform),g.position,nullptr))flash=clamp(dot(normal(d),U.forward(aimTransform))*.8f+.2f,0,1);
                 U.scale(g.transform,{.8f,.8f,.8f});R.call(U.setMaterial,g.renderer,{mats[2]});g.remaining=.08f;
             }
             if(g.kind==10){U.position(g.transform,g.position+V3{0,1,0});U.scale(g.transform,{3.8f,2.7f,3.8f});R.call(U.setMaterial,g.renderer,{mats[6]});g.remaining=18;}
@@ -552,90 +715,154 @@ static void updateGrenades(float dt){
             if(g.kind==12){g.remaining=12;}
         }else{
             g.remaining-=dt;g.tick-=dt;
-            if(g.kind==11&&g.tick<=0){radiusDamage(g.position,2.5f,9);if(length(U.pos(playerTransform)-g.position)<2.5f)combat_damage(&combat,6);g.tick=.3f;}
+            if(g.kind==11&&g.tick<=0){radiusDamage(g.position,2.5f,9);if(length(U.pos(playerTransform)-g.position)<2.5f){combat_damage(&combat,6);hurt=.4f;}g.tick=.3f;}
             if(g.kind==12&&g.tick<=0){sound(2,.4f);g.tick=.4f;for(auto &b:bots)if(now-b.lastSeen>3)b.target=g.position;}
             if(g.remaining<=0){U.remove(g.root);g.root=nullptr;}
         }
     }
 }
 static void updateBots(){
-    V3 target=U.pos(cameraTransform),ground=U.pos(playerTransform);
+    if(!botsEnabled)return;
+    V3 target=U.pos(aimTransform),ground=U.pos(playerTransform);
     for(int i=0;i<4;i++){
-        Bot &b=bots[i];if(!U.alive(b.root))continue;
-        if(b.hp<=0){if(now>=b.respawn){U.position(b.transform,spawnPosition(i));U.active(b.root,true);b.hp=100;b.armor=50;b.nextShot=now+1;}continue;}
+        Bot &b=bots[i];if(!U.alive(b.root)&&b.hp>0)continue;
+        if(b.hp<=0){if(b.root&&now>=b.respawn){U.position(b.transform,spawnPosition(i));U.active(b.root,true);b.hp=100;b.armor=50;b.nextShot=now+1.5f;}continue;}
         V3 p=U.pos(b.transform),eye=p+V3{0,1.5f,0};float dist=length(target-eye);
         bool seen=now>b.blind&&dist<25&&visible(eye,target,playerTransform);
-        if(seen){if(now-b.lastSeen>.2f)b.nextShot=std::max(b.nextShot,now+.35f);b.lastSeen=now;b.target=ground;V3 flat=ground;flat.y=p.y;R.call(U.lookAt,b.transform,{&flat});}
+        if(seen){
+            if(now-b.lastSeen>.3f){b.firstSeen=now;b.nextShot=std::max(b.nextShot,now+.55f);} // reaction time
+            b.lastSeen=now;b.target=ground;V3 look=ground;look.y=p.y;R.call(U.lookAt,b.transform,{&look});
+        }
         else if(now-b.lastSeen>6&&length(b.target-p)<2)b.target=spawnPosition(i+(int)now/10);
-        if(R.value<bool>(R.call(U.onNav,b.agent)))R.call(U.setDestination,b.agent,{&b.target});
+        // Re-plan only when the goal moved or every half second; SetDestination recomputes a path.
+        if((length(b.target-b.routed)>.5f||now>=b.repath)&&R.value<bool>(R.call(U.onNav,b.agent))){R.call(U.setDestination,b.agent,{&b.target});b.routed=b.target;b.repath=now+.5f;}
         float stride=seen&&dist<5?0:std::sin(now*8+i)*16;for(int j=0;j<2;j++)U.euler(b.legs[j],{j?stride:-stride,0,0});
         if(seen&&now>=b.nextShot&&combat.health>0){
-            const Weapon &w=weapons[b.weapon];b.nextShot=now+std::max(.18f,60.f/w.rpm);
+            const Weapon &w=weapons[b.weapon];b.nextShot=now+std::max(.3f,60.f/w.rpm*2.2f);
             tracer(eye,target);sound(std::min(w.kind,5),.16f);
-            V3 v=R.value<V3>(R.call(U.getVelocity,character));
-            float chance=clamp(.8f-dist*.018f-length(v)*.035f,.15f,.85f);
-            if(random01()<chance){int damage=(int)(w.damage*.4f);if(random01()<.08f)damage*=2;combat_damage(&combat,damage);flash=std::max(flash,.12f);}
+            float moving=length(flat(mv.velocity));
+            float chance=clamp(.7f-dist*.02f-moving*.05f-(mv.grounded?0:.15f),.1f,.75f);
+            if(random01()<chance){
+                int damage=(int)(w.damage*.35f);
+                if(random01()<(combat.helmet?.03f:.1f))damage*=2;
+                combat_damage(&combat,damage);hurt=std::max(hurt,.45f);
+            }
         }
     }
 }
 #include "unity_ui.inc"
 
-static void makeHud(bool inGame){
-    updateNativeUI(inGame);
-    std::ostringstream s;std::string status;
-    {std::lock_guard<std::mutex> lock(hudMutex);status=bootStatus;}
-    s<<"{\"status\":\""<<escape(status)<<"\",\"game\":"<<(inGame?"true":"false")
-     <<",\"weapon\":"<<combat.weapon<<",\"money\":"<<combat.money<<",\"health\":"<<combat.health
-     <<",\"armor\":"<<combat.armor<<",\"ammo\":"<<combat.ammo[combat.weapon]<<",\"reserve\":"<<combat.reserve[combat.weapon]
-     <<",\"kills\":"<<combat.kills<<",\"reload\":"<<(combat.reload_left>0?"true":"false")
-     <<",\"scope\":"<<(scoped?"true":"false")<<",\"flash\":"<<flash
-     <<",\"message\":\""<<escape(notification)<<"\",\"killfeed\":\""<<escape(killfeed)<<"\",\"owned\":[";
-    for(int i=0;i<WEAPON_COUNT;i++){if(i)s<<',';s<<(combat.owned[i]?"true":"false");}s<<"]}";
-    std::lock_guard<std::mutex> lock(hudMutex);hud=s.str();
+// ---------------------------------------------------------------- movement
+// Granny's FirstPersonControl-style update sets the horizontal speed directly from the
+// joystick, zeroes it in the air (inAirMultiplier=0) and counts any airtime above 0.36 s as a
+// hard landing and above 0.7 s as a deadly fall. CharacterController.Move is intercepted for the
+// player only: ground acceleration/friction, air momentum and a jump with its own gravity.
+static constexpr float groundAccel=42,groundFriction=32,airAccel=9,jumpSpeed=5.1f,jumpGravity=14.5f;
+static Obj moveOwner=nullptr;
+static int32_t (*originalMove)(Obj,V3,const Method*);
+static V3 approach(V3 v,V3 target,float delta){V3 d=target-v;float l=length(d);return l<=delta||l<1e-5f?target:v+d*(delta/l);}
+static float weaponSpeed(){const Weapon &w=weapons[combat.weapon];return clamp(w.speed/5.f,.6f,1.f)*(scoped?.6f:1.f);}
+static V3 joystickVelocity(){
+    if(!U.joystick)return {};
+    Obj stick=R.field<Obj>(player,U.fps,"joystick");if(!stick)return {};
+    V2 input=R.field<V2>(stick,U.joystick,"<inputDir>k__BackingField");
+    V3 forward=normal(flat(U.forward(playerTransform))),right=normal(flat(U.right(playerTransform)));
+    float ax=std::fabs(input.x),ay=std::fabs(input.y);if(ax<.02f&&ay<.02f)return {};
+    float speed=ay>ax?R.field<float>(player,U.fps,input.y>=0?"forwardSpeed":"backwardSpeed")*ay:R.field<float>(player,U.fps,"sidestepSpeed")*ax;
+    return normal(right*input.x+forward*input.y)*speed;
+}
+static int32_t hookedMove(Obj self,V3 motion,const Method *method){
+    if(!moveOwner||self!=character||!worldReady||paused)return originalMove(self,motion,method);
+    float dt=stepDt;
+    V3 desired=mv.grounded?V3{motion.x/dt,0,motion.z/dt}:joystickVelocity();
+    desired=desired*weaponSpeed();
+    bool input=length(desired)>.05f;
+    if(mv.grounded)mv.velocity=approach(mv.velocity,input?desired:V3{},(input?groundAccel:groundFriction)*dt);
+    else if(input)mv.velocity=approach(mv.velocity,desired,airAccel*dt);
+    if(mv.jumpBuffer>=0&&now-mv.jumpBuffer>.2f)mv.jumpBuffer=-1;
+    if(mv.jumpBuffer>=0&&mv.grounded&&!mv.jumping){
+        mv.jumping=true;mv.vy=jumpSpeed;mv.air=0;mv.jumpBuffer=-1;mv.budget=2*jumpSpeed/jumpGravity+.12f;
+    }
+    V3 result{mv.velocity.x*dt,motion.y,mv.velocity.z*dt};
+    if(mv.jumping){mv.vy-=jumpGravity*dt;result.y=mv.vy*dt;mv.air+=dt;}
+    int32_t flags=originalMove(self,result,method);
+    bool below=flags&4,above=flags&2;
+    if(mv.jumping){if(above&&mv.vy>0)mv.vy=0;if(below&&mv.vy<=0)mv.jumping=false;}
+    mv.grounded=below;
+    // Hitting a wall removes the matching momentum instead of sliding forever into it.
+    if(flags&1){V3 actual=R.value<V3>(R.call(U.getVelocity,self));if(length(flat(actual))<length(mv.velocity)*.5f)mv.velocity=flat(actual);}
+    return flags;
+}
+static void afterMovement(Obj self){
+    // The mod's own jump must not be read by Granny as a fall.
+    if(mv.jumping){float credited=std::max(0.f,mv.air-mv.budget);R.set(self,U.fps,"timeInAir",credited);}
+}
+
+// ---------------------------------------------------------------- tick and hooks
+static void handleMenuActions(){
+    int id=buyInput.exchange(-1);
+    if(id>=0&&id<WEAPON_COUNT){
+        if(combat.owned[id]&&(weapons[id].kind<8||combat.ammo[id]>0)){selectWeapon(id);notify(std::string("Выбрано: ")+weapons[id].name,1.5f);}
+        else if(combat_buy(&combat,weapons,WEAPON_COUNT,id)){if(weapons[id].kind<8)lastGun=id;scoped=burstMode=false;burstLeft=0;weaponModel();notify(std::string("Куплено: ")+weapons[id].name);sound(6,.5f);}
+        else notify("Недостаточно денег");
+    }
+    id=selectInput.exchange(-1);if(id>=0)selectWeapon(id);
+    int armor=armorInput.exchange(0);
+    if(armor){
+        int price=armor==2?(combat.armor>=100?350:1000):650;
+        if(combat.armor>=100&&(armor==1||combat.helmet))notify("Броня уже полная");
+        else if(combat.money>=price){combat.money-=price;combat.armor=100;if(armor==2)combat.helmet=1;notify(armor==2?"Kevlar + Helmet":"Kevlar Vest");sound(6,.5f);}
+        else notify("Недостаточно денег");
+    }
+    int bots=spawnInput.exchange(0);
+    if(bots==1){botsEnabled=true;if(visualsReady)spawnBots();}
+    if(bots==2){botsEnabled=false;removeBots();notify("Боты убраны");}
 }
 static void tick(Obj self){
     if(paused){fireInput=0;return;}
-    if(sceneReady&&self!=player&&U.alive(player))return;
-    float dt=R.value<float>(R.call(U.fixedDelta));dt=clamp(dt,.001f,.1f);
-    if(self!=player||!U.alive(cameraObject)||!cubeMesh)sceneReady=false;
-    if(!sceneReady){
-        auto time=std::chrono::steady_clock::now();
-        if(time<sceneProbeAt)return;
-        sceneProbeAt=time+std::chrono::milliseconds(500);
-        if(!resetWorld(self)){makeHud(false);return;}
-    }
-    if(!cameraTransform||!cubeMesh){makeHud(false);return;}
-    now+=dt;
+    if(player&&self!=player&&U.alive(player))return;
+    now+=stepDt;
+    if(self!=player)adoptController(self);
+    applyFrameRate(false);
+    nativeUI.ensure();
+    nativeUI.readInput();
+    handleMenuActions();
+    prepareWorld();
     bool caught=R.field<bool>(self,U.fps,"playerCaught");
-    if(caught){wasCaught=true;fireInput=0;makeHud(false);return;}
-    if(wasCaught){combat.health=100;combat.armor=100;wasCaught=false;if(botsEnabled)spawnBots();}
-    inputNativeUI();
-    int id=buyInput.exchange(-1);
-    if(id>=0){if(combat_buy(&combat,weapons,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();notification=std::string("Куплено: ")+weapons[id].name;}else notification="Недостаточно денег";}
-    id=selectInput.exchange(-1);if(id>=0&&combat_select(&combat,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();}
-    if(armorInput.exchange(0)){if(combat.money>=1000){combat.money-=1000;combat.armor=100;notification="Броня: 100";}else notification="Недостаточно денег";}
-    if(spawnInput.exchange(0))spawnBots();
+    if(caught){
+        if(!wasCaught){wasCaught=true;fireInput=0;nativeUI.closeShop();resetMovement();}
+        nativeUI.update(false);return;
+    }
+    if(wasCaught){wasCaught=false;combat.health=100;deathHandled=false;}
+    if(!worldReady){nativeUI.update(true);return;}
+    afterMovement(self);
     const Weapon &w=weapons[combat.weapon];
-    if(altInput.exchange(0)){if(w.scoped)scoped=!scoped;else if(w.burst)burstMode=!burstMode;else notification="У этого оружия нет альтернативного режима";}
-    float fov=scoped?(w.kind==3?25.f:42.f):75.f;R.call(U.setFov,cameraObject,{&fov});
-    float speed=w.speed*(scoped?.7f:1.f);R.set(self,U.fps,"forwardSpeed",speed);R.set(self,U.fps,"backwardSpeed",speed*.8f);R.set(self,U.fps,"sidestepSpeed",speed);
-    if(jumpInput.exchange(0)&&R.field<bool>(self,U.fps,"PlayerIsGrounded")){V3 v=R.field<V3>(self,U.fps,"velocity");v.y=4.6f;R.set(self,U.fps,"velocity",v);R.set(self,U.fps,"canJump",true);}
+    if(altInput.exchange(0)){if(w.scoped)scoped=!scoped;else if(w.burst){burstMode=!burstMode;notify(burstMode?"Режим: очередь":"Режим: одиночный",1.2f);}else notify("У этого оружия нет прицела",1.2f);}
+    if(cameraObject&&U.setFov){float fov=scoped?(w.kind==3?baseFov*.35f:baseFov*.6f):baseFov;R.call(U.setFov,cameraObject,{&fov});}
+    if(jumpInput.exchange(0))mv.jumpBuffer=now;
     if(reloadInput.exchange(0))combat_reload(&combat,weapons);
-    combat_tick(&combat,weapons,dt);
-    bool held=fireInput.load();
+    combat_tick(&combat,weapons,stepDt);
+    bool held=fireInput.load()&&!nativeUI.shopOpen;
     if(burstMode&&w.burst){
         if(held&&!combat.trigger_down&&burstLeft==0)burstLeft=3;
         if(burstLeft>0&&combat.cooldown<=0&&combat.reload_left<=0){combat.trigger_down=0;if(combat_fire(&combat,weapons,1)){shot();--burstLeft;combat.cooldown=burstLeft?0.085f:.3f;}else burstLeft=0;}
         combat.trigger_down=held;
     }else if(combat_fire(&combat,weapons,held))shot();
-    updateBots();updateGrenades(dt);
+    if(visualsReady){updateBots();updateGrenades(stepDt);}
     for(auto &e:effects)if(e.root&&now>e.expires)U.active(e.root,false);
-    recoilPitch=std::max(0.f,recoilPitch-dt*7);recoilYaw*=std::max(0.f,1-dt*7);
-    V3 kick{-recoilPitch,recoilYaw,0};R.call(U.rotate,cameraTransform,{&kick});lastPitch=recoilPitch;lastYaw=recoilYaw;
-    if(gunTransform){float bob=std::sin(now*7)*.004f;U.local(gunTransform,{scoped?.08f:.24f,-.2f+bob,.46f-recoilPitch*.002f});U.euler(gunTransform,{combat.reload_left>0?25.f:-recoilPitch*.4f,0,combat.reload_left>0?-15.f:0});}
-    flash=std::max(0.f,flash-dt*.35f);
-    if(combat.health<=0){R.call(U.playerDeath,self);fireInput=0;notification="Ты погиб. Начни следующий день.";}
-    hudTimer-=dt;if(hudTimer<=0){makeHud(true);hudTimer=.1f;}
+    if(muzzle&&muzzleUntil>0&&now>muzzleUntil){U.active(muzzle,false);muzzleUntil=0;}
+    recoilPitch=std::max(0.f,recoilPitch-stepDt*7);recoilYaw*=std::max(0.f,1-stepDt*7);
+    if(U.alive(aimTransform)){V3 kick{-recoilPitch,recoilYaw,0};R.call(U.rotate,aimTransform,{&kick});lastPitch=recoilPitch;lastYaw=recoilYaw;}
+    if(U.alive(gunTransform)){
+        float speed=length(flat(mv.velocity)),bob=std::sin(now*9)*.006f*clamp(speed/4,0,1),sway=std::cos(now*4.5f)*.004f*clamp(speed/4,0,1);
+        float drop=mv.grounded?0:clamp(mv.vy*.006f,-.02f,.02f);
+        U.local(gunTransform,{(scoped?.06f:.22f)+sway,-.2f+bob-drop,.42f-recoilPitch*.003f});
+        U.euler(gunTransform,{combat.reload_left>0?25.f:-recoilPitch*.5f,0,combat.reload_left>0?-15.f:0});
+        if(scoped&&w.kind==3)U.active(gun,false);else U.active(gun,true);
+    }
+    flash=std::max(0.f,flash-stepDt*.35f);hurt=std::max(0.f,hurt-stepDt*1.4f);hitMarker=std::max(0.f,hitMarker-stepDt);
+    if(combat.health<=0&&!deathHandled){deathHandled=true;fireInput=0;notify("Ты убит. Новый день — новый раунд.",4);if(U.playerDeath)R.call(U.playerDeath,self);}
+    nativeUI.update(true);
 }
 static void unityReady(){
     static bool recorded=false;if(recorded)return;recorded=true;
@@ -652,25 +879,22 @@ static void hookedFixed(Obj self,const Method *method){
     static bool first=true;if(first){first=false;log("First FPSControllerNEW.FixedUpdate callback");}
     if(inTick){originalFixed(self,method);return;}
     inTick=true;
-    if(runtimeReady&&self==player&&U.alive(cameraTransform)&&(lastPitch!=0||lastYaw!=0)){V3 undo{lastPitch,-lastYaw,0};R.call(U.rotate,cameraTransform,{&undo});lastPitch=lastYaw=0;}
+    bool ours=runtimeReady&&self==player;
+    if(ours&&U.alive(aimTransform)&&(lastPitch!=0||lastYaw!=0)){V3 undo{lastPitch,-lastYaw,0};R.call(U.rotate,aimTransform,{&undo});lastPitch=lastYaw=0;}
+    if(runtimeReady)stepDt=clamp(R.value<float>(R.call(U.fixedDelta)),.001f,.1f);
+    moveOwner=ours?self:nullptr;
     originalFixed(self,method);
+    moveOwner=nullptr;
     unityReady();
     if(!runtimeAttempted){
         runtimeAttempted=true;TraceScope trace("bind managed API on Unity gameplay thread");
         runtimeReady=R.init()&&U.bind();
-        if(runtimeReady){
-            log("Managed API bound after original gameplay callback");
-            Obj boxed=R.call(U.objectAlive,nullptr,{self});
-            std::ostringstream state;state<<"First controller: class="<<R.name(R.object_get_class(self))<<" native=0x"<<std::hex<<R.nativePointer(self)
-                <<"; managed alive="<<std::dec<<R.value<bool>(boxed)<<"; boxed type="<<R.name(boxed?R.object_get_class(boxed):nullptr);
-            Field *field=R.class_get_field_from_name(U.fps,"character");
-            if(field)state<<"; character offset=0x"<<std::hex<<R.field_get_offset(field);
-            log(state.str());
-        }
+        if(runtimeReady)log("Managed API bound after original gameplay callback");
     }
-    if(runtimeReady)tick(self);inTick=false;
+    if(runtimeReady)tick(self);
+    inTick=false;
 }
-struct LibraryTarget {uintptr_t base=0;bool buildMatches=false,fixedExecutable=false,menuExecutable=false;};
+struct LibraryTarget {uintptr_t base=0;bool buildMatches=false,fixedExecutable=false,menuExecutable=false,moveExecutable=false;};
 static int inspectLibrary(dl_phdr_info *info,size_t,void *context){
     if(!info->dlpi_name)return 0;
     const char *name=strrchr(info->dlpi_name,'/');name=name?name+1:info->dlpi_name;
@@ -680,7 +904,7 @@ static int inspectLibrary(dl_phdr_info *info,size_t,void *context){
         const auto &header=info->dlpi_phdr[i];
         if(header.p_type==PT_LOAD&&(header.p_flags&PF_X)){
             auto inside=[&](uintptr_t rva){return rva>=header.p_vaddr&&rva+16<=header.p_vaddr+header.p_memsz;};
-            found.fixedExecutable|=inside(target::fixedUpdate);found.menuExecutable|=inside(target::menuStart);
+            found.fixedExecutable|=inside(target::fixedUpdate);found.menuExecutable|=inside(target::menuStart);found.moveExecutable|=inside(target::characterMove);
         }
         if(header.p_type!=PT_NOTE||header.p_memsz>1024*1024)continue;
         const uint8_t *notes=(const uint8_t*)(info->dlpi_addr+header.p_vaddr);size_t offset=0;
@@ -705,15 +929,19 @@ static void boot(){
     TraceScope trace("install verified gameplay hooks without managed VM access");
     LibraryTarget library;dl_iterate_phdr(inspectLibrary,&library);
     if(!library.base||!library.buildMatches||!library.fixedExecutable||!library.menuExecutable){setStatus("Мод не подключён: версия IL2CPP отличается от Granny 1.8.12");return;}
-    void *address=(void*)(library.base+target::fixedUpdate),*menuAddress=(void*)(library.base+target::menuStart);
+    void *address=(void*)(library.base+target::fixedUpdate),*menuAddress=(void*)(library.base+target::menuStart),*moveAddress=(void*)(library.base+target::characterMove);
     if(memcmp(address,target::fixedBytes,sizeof(target::fixedBytes))||memcmp(menuAddress,target::menuBytes,sizeof(target::menuBytes))){setStatus("Мод не подключён: код контроллера отличается от проверенного");return;}
-    log("BOOT original ELF build ID and both method entry points verified");
+    log("BOOT original ELF build ID and gameplay entry points verified");
     int hookInit=shadowhook_init(SHADOWHOOK_MODE_UNIQUE,false);
     if(hookInit!=0){setStatus(std::string("Ошибка подключения: ")+shadowhook_to_errmsg(hookInit));return;}
-    if(!address||!shadowhook_hook_func_addr(address,(void *)hookedFixed,(void **)&originalFixed)){
+    if(!shadowhook_hook_func_addr(address,(void *)hookedFixed,(void **)&originalFixed)){
         setStatus(std::string("Не удалось подключить игровой цикл: ")+shadowhook_to_errmsg(shadowhook_get_errno()));return;
     }
     if(!shadowhook_hook_func_addr(menuAddress,(void*)hookedMenu,(void**)&originalMenu))log("Menu startup acknowledgement hook unavailable");
+    if(library.moveExecutable&&!memcmp(moveAddress,target::moveBytes,sizeof(target::moveBytes))){
+        if(shadowhook_hook_func_addr(moveAddress,(void*)hookedMove,(void**)&originalMove))log("BOOT movement hook installed on CharacterController.Move");
+        else log(std::string("Movement hook unavailable: ")+shadowhook_to_errmsg(shadowhook_get_errno()));
+    }else log("Movement hook skipped: CharacterController.Move differs from the verified build");
     setStatus("Подключение установлено. Оружие и боты включатся при начале игры.");
 }
 
@@ -726,14 +954,9 @@ extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(
     logFile=fopen(filename.c_str(),"a");startupFile=fopen((directory+"/granny-csgo-startup.log").c_str(),"w");
     overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
     botsEnabled=mode>=2;
-    log("Granny Tactical Lab iteration 8 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
+    log("Granny Tactical Lab iteration " MOD_ITERATION " / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
     std::thread(boot).detach();
 }
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeAction(JNIEnv *,jclass,jint action,jint value){
-    switch(action){case 0:fireInput=value;break;case 1:reloadInput=1;break;case 2:buyInput=value;break;case 3:selectInput=value;break;case 4:altInput=1;break;case 5:jumpInput=1;break;case 6:spawnInput=1;break;case 7:armorInput=1;break;case 8:paused=value;fireInput=0;break;}
-}
-extern "C" JNIEXPORT jstring JNICALL Java_org_modlab_granny_ModOverlay_nativeHud(JNIEnv *env,jclass){
-    std::lock_guard<std::mutex> lock(hudMutex);
-    if(hud=="{}")return env->NewStringUTF(("{\"status\":\""+escape(bootStatus)+"\",\"game\":false}").c_str());
-    return env->NewStringUTF(hud.c_str());
+    switch(action){case 0:fireInput=value;break;case 1:reloadInput=1;break;case 2:buyInput=value;break;case 3:selectInput=value;break;case 4:altInput=1;break;case 5:jumpInput=1;break;case 6:spawnInput=value?value:1;break;case 7:armorInput=value?value:1;break;case 8:paused=value;fireInput=0;break;}
 }

@@ -1,0 +1,37 @@
+{
+  "tag": "iteration-09",
+  "filename": "granny-tactical-iteration-09.apk",
+  "bytes": 210514022,
+  "sha256": "9a1cccb1b6e56e361cffa06182b2d165f77a1172e236db8078b6b9be2f335f09",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.dvloper.granny",
+  "architecture": "arm64-v8a",
+  "version_code": 100,
+  "signing_key": "new test key; uninstall iterations 1-8 before installing",
+  "built_from": "iteration-08 APK with libgranny_csgo.so, classes6.dex and AndroidManifest.xml replaced",
+  "android_install_verified": false,
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": true,
+  "native_mode": 2,
+  "automatic_game_launch": true,
+  "independent_report_icon": true,
+  "verified_original_elf_build_id": "801a3345802f6969e7abce2c46285bdc5e8bb666",
+  "hooks": [
+    "FPSControllerNEW.FixedUpdate",
+    "MenuImageSwitcher.Start",
+    "CharacterController.Move"
+  ],
+  "player_camera_path": "Player/CameraShakeAnim/CameraPivot/Main Camera/Camera",
+  "ui": "mod-owned ScreenSpaceOverlay canvas, sortingOrder 6",
+  "buy_menu": "CS:GO wheel: 6 categories, item ring, stats panel",
+  "movement": "acceleration, friction, air momentum, jump with fall-time compensation",
+  "physics_rate_hz": 60,
+  "il2cpp_api_check": "105 methods/fields present in metadata dump",
+  "ui_layout_overlap_check": [
+    "2340x1080",
+    "2400x1080",
+    "1920x1080",
+    "1280x800",
+    "2048x1536"
+  ]
+}
