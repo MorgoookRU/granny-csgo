@@ -210,3 +210,22 @@
 - aapt показывает правильный resource package com.modlab.grannycsgo;
   game_view_content_description 0x7f0d0031, unitySurfaceView 0x7f07008d.
   Проверка запуска исправленной APK на телефоне пока ожидается.
+
+## 2026-10-03 — отказ установки APK 4, итерация 5
+
+- Пользователь прислал экран Samsung installer «Приложение не установлено»
+  для Granny Tactical Lab · 4. Конкретный код PackageInstaller неизвестен.
+- APK 3 и 4 имеют одинаковый сертификат SHA-256
+  f5dde64810e31ac959593be5031ce369ad39ecb7b0c415fd89d2592ba56661b0.
+  Подписи v2/v3 проходят проверку; resources.arsc сохранён STORED и выровнен.
+- GitHub asset 608072810 имеет ту же SHA-256, что локальная APK 4;
+  повреждение опубликованного серверного файла не обнаружено.
+- Решено вернуть compiled resources из установленной третьей версии
+  без изменения bytes, сохранив исправление Unity в Java/smali.
+- Семь getIdentifier обращений Unity используют ResourceLookup с fallback
+  из нового application ID в исходное имя compiled resource package.
+  Другие Context.getPackageName вызовы, в том числе системные, не изменены.
+- Framework resource lookups сохраняют оригинальный результат; поиск
+  в исходном пакете применяется только для com.modlab.grannycsgo и ID 0.
+- Диагностический отчёт показывает direct/resolved ID; versionCode 96.
+- Установка на Samsung и дальнейший запуск требуют проверки пользователя.

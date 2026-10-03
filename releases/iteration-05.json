@@ -1,0 +1,18 @@
+{
+  "tag": "iteration-05",
+  "filename": "granny-tactical-iteration-05.apk",
+  "bytes": 210477158,
+  "sha256": "26050fafa5335c53065c85c69c3bbdc20dfd6bb8ae122a71a105ac860a06c032",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.dvloper.granny",
+  "architecture": "arm64-v8a",
+  "version_code": 96,
+  "android_install_verified": false,
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": false,
+  "independent_diagnostic_launcher": true,
+  "unity_process": ":game",
+  "sdk_startup_providers_enabled": false,
+  "resources_identical_to": "iteration-03",
+  "resource_lookup_calls_patched": 7
+}

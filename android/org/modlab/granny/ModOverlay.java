@@ -150,7 +150,7 @@ public final class ModOverlay {
         });
         TextView logButton = button("LOG", 50, 37, Gravity.TOP|Gravity.RIGHT, 8, 8, 0, 0);
         logButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showLog(); } });
-        info = text("TACTICAL LAB · ITERATION 4", 12);
+        info = text("TACTICAL LAB · ITERATION 5", 12);
         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, dp(37), Gravity.TOP|Gravity.CENTER_HORIZONTAL);
         p.topMargin = dp(8); root.addView(info, p);
         message = text("Подключение мода…", 11);

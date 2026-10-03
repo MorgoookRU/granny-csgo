@@ -13,7 +13,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 from patch_manifest import patch, diagnostic_launcher
-from patch_resources import rename_package
+from patch_unity_resources import patch_unity_resources
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -23,6 +23,8 @@ def run(args):
 
 def build(lab: Path, iteration: int):
     tools=lab/'tools';build=lab/'build';generated=build/'generated'
+    changes,total=patch_unity_resources(lab/'decoded-base')
+    print('Unity resource lookup patches:',changes,'total:',total,flush=True)
     activity=lab/'decoded-base/smali_classes4/com/unity3d/player/UnityPlayerActivity.smali'
     source=activity.read_text()
     hook='    invoke-static {p0}, Lorg/modlab/granny/ModOverlay;->attach(Landroid/app/Activity;)V\n\n'
@@ -61,8 +63,6 @@ def build(lab: Path, iteration: int):
             data=game.read(entry)
             if name=='AndroidManifest.xml':data,changes=patch(data,label=f'Granny Tactical Lab · {iteration}',version_code=91+iteration);print('Manifest changes:',changes,flush=True)
             if name=='AndroidManifest.xml' and iteration >= 3:data=diagnostic_launcher(data)
-            if name=='resources.arsc':
-                data,changes=rename_package(data);print('Resource package changes:',changes,flush=True)
             output.writestr(entry,data)
         for entry in native.infolist():
             if entry.filename.startswith('lib/') and entry.filename.endswith('.so'):output.writestr(entry,native.read(entry))

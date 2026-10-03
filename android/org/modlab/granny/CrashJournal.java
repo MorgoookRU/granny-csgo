@@ -9,17 +9,18 @@ public final class CrashJournal {
     static final String FILE = "startup-diagnostic.log";
     public static void unityStarting(Context context) {
         append(context,"UnityPlayerActivity.onCreate entered");
-        resourceStatus(context, "game_view_content_description", "string");
-        resourceStatus(context, "unitySurfaceView", "id");
+        append(context,resourceStatus(context, "game_view_content_description", "string"));
+        append(context,resourceStatus(context, "unitySurfaceView", "id"));
     }
     private static String resourceStatus(Context context, String name, String type) {
         try {
             android.content.res.Resources resources = context.getResources();
-            int id = resources.getIdentifier(name,type,context.getPackageName());
-            String status = type + "/" + name + " id=0x" + Integer.toHexString(id);
+            int direct = resources.getIdentifier(name,type,context.getPackageName());
+            int id = ResourceLookup.identifier(resources,name,type,context.getPackageName());
+            String status = type + "/" + name + " direct=0x" + Integer.toHexString(direct) + " resolved=0x" + Integer.toHexString(id);
             if(id != 0) status += " package=" + resources.getResourcePackageName(id);
             if(id != 0 && "string".equals(type)) status += " value=" + resources.getString(id);
-            append(context,status); return status;
+            return status;
         } catch (Exception failure) { return name + " lookup failed: " + failure; }
     }
     public static synchronized void append(Context context, String message) {
@@ -57,7 +58,7 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 4\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 5\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
