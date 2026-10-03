@@ -29,13 +29,14 @@ struct NativeUI {
     const Method *ctor=nullptr,*anchorMin=nullptr,*anchorMax=nullptr,*sizeDelta=nullptr,*anchorPos=nullptr,*pivotSet=nullptr;
     const Method *textValue=nullptr,*textFont=nullptr,*fontSize=nullptr,*alignment=nullptr,*fontStyle=nullptr,*color=nullptr,*rayTarget=nullptr,*overflowH=nullptr,*overflowV=nullptr;
     const Method *allFonts=nullptr,*builtinFont=nullptr,*renderMode=nullptr,*sortingOrder=nullptr,*touchCount=nullptr,*getTouch=nullptr,*width=nullptr,*height=nullptr;
-    const Method *effectColor=nullptr,*effectDistance=nullptr,*overrideSorting=nullptr;
+    const Method *effectColor=nullptr,*effectDistance=nullptr,*overrideSorting=nullptr,*scaleFactor=nullptr,*isRoot=nullptr;
     Obj canvasGO=nullptr,root=nullptr,hud=nullptr,wheel=nullptr,raycast=nullptr,font=nullptr;
     Obj hurtImage=nullptr,flashImage=nullptr,scopeRoot=nullptr,crossRoot=nullptr,cross[5]{};
     UILabel hp,money,weaponName,ammo,notice,status,wheelTitle,centerTitle,centerPrice,centerInfo,centerHint,statNames[4];
     Obj statFill[4]{};float statValue[4]{-1,-1,-1,-1};
     std::vector<UIWidget> widgets;
     std::unordered_map<int,int> fingerWidget;
+    float unit=1; // canvas units per screen pixel (1 / host canvas scaleFactor)
     bool bound=false,failed=false,shopOpen=false;int category=-1,selected=-1,lastFrame=-1,screenW=0,screenH=0,itemStart=0;
     float retry=0,crossGap=-1;Color hurtShown{0,0,0,-1},flashShown{0,0,0,-1},crossShown{0,0,0,-1};bool canvasVisible=true,wheelVisible=false,scopeVisible=false,crossVisible=true;
     bool bind(){
@@ -56,7 +57,7 @@ struct NativeUI {
         overflowH=R.method(text,"set_horizontalOverflow",{"UnityEngine.HorizontalWrapMode"});overflowV=R.method(text,"set_verticalOverflow",{"UnityEngine.VerticalWrapMode"});
         color=R.method(image,"set_color",{"UnityEngine.Color"});rayTarget=R.method(image,"set_raycastTarget",{"System.Boolean"});
         allFonts=R.method(resources,"FindObjectsOfTypeAll",{"System.Type"});builtinFont=R.method(resources,"GetBuiltinResource",{"System.Type","System.String"});
-        renderMode=R.method(canvas,"get_renderMode",{});sortingOrder=R.method(canvas,"set_sortingOrder",{"System.Int32"});overrideSorting=R.method(canvas,"set_overrideSorting",{"System.Boolean"});
+        renderMode=R.method(canvas,"get_renderMode",{});sortingOrder=R.method(canvas,"set_sortingOrder",{"System.Int32"});overrideSorting=R.method(canvas,"set_overrideSorting",{"System.Boolean"});scaleFactor=R.method(canvas,"get_scaleFactor",{});isRoot=R.method(canvas,"get_isRootCanvas",{});
         touchCount=R.method(input,"get_touchCount",{});getTouch=R.method(input,"GetTouch",{"System.Int32"});
         width=R.method(screen,"get_width",{});height=R.method(screen,"get_height",{});
         if(shadow){effectColor=R.method(shadow,"set_effectColor",{"UnityEngine.Color"});effectDistance=R.method(shadow,"set_effectDistance",{"UnityEngine.Vector2"});}
@@ -79,10 +80,10 @@ struct NativeUI {
     }
     // Pixel placement relative to the screen centre.
     void placePx(Obj go,float cx,float cy,float w,float h){
-        Obj t=U.trans(go);V2 c{.5f,.5f},size{w,h},position{cx,cy};
+        Obj t=U.trans(go);V2 c{.5f,.5f},size{w*unit,h*unit},position{cx*unit,cy*unit};
         R.call(anchorMin,t,{&c});R.call(anchorMax,t,{&c});R.call(pivotSet,t,{&c});R.call(sizeDelta,t,{&size});R.call(anchorPos,t,{&position});
     }
-    void move(Obj go,float cx,float cy){Obj t=U.trans(go);V2 position{cx,cy};R.call(anchorPos,t,{&position});}
+    void move(Obj go,float cx,float cy){Obj t=U.trans(go);V2 position{cx*unit,cy*unit};R.call(anchorPos,t,{&position});}
     UIRect pxRect(float cx,float cy,float w,float h){return {screenW*.5f+cx-w*.5f,screenH*.5f+cy-h*.5f,screenW*.5f+cx+w*.5f,screenH*.5f+cy+h*.5f};}
     UIRect anchorRect(UIRect a){return {a.x0*screenW,a.y0*screenH,a.x1*screenW,a.y1*screenH};}
     Obj paint(Obj go,Color tint,bool blocks){
@@ -93,11 +94,11 @@ struct NativeUI {
         Obj go=node(parent,name);place(go,anchors);
         UILabel result;result.text=U.add(go,text);result.color=tint;result.value=value;
         R.call(textFont,result.text,{font});R.call(textValue,result.text,{R.string_new(value.c_str())});
-        int pixels=std::max(12,(int)(screenH*size));R.call(fontSize,result.text,{&pixels});R.call(alignment,result.text,{&align});
+        int pixels=std::max(1,(int)std::lround(std::max(12.f,screenH*size)*unit));R.call(fontSize,result.text,{&pixels});R.call(alignment,result.text,{&align});
         if(bold&&fontStyle){int style=1;R.call(fontStyle,result.text,{&style});}
         bool no=false;R.call(rayTarget,result.text,{&no});int over=1;if(overflowH)R.call(overflowH,result.text,{&over});if(overflowV)R.call(overflowV,result.text,{&over});
         R.call(color,result.text,{&tint});
-        if(shadow&&effectColor){Obj s=U.add(go,shadow);Color dark{0,0,0,.85f};V2 offset{std::max(1.f,screenH*.002f),-std::max(1.f,screenH*.002f)};R.call(effectColor,s,{&dark});if(effectDistance)R.call(effectDistance,s,{&offset});}
+        if(shadow&&effectColor){Obj s=U.add(go,shadow);Color dark{0,0,0,.85f};V2 offset{std::max(1.f,screenH*.002f)*unit,-std::max(1.f,screenH*.002f)*unit};R.call(effectColor,s,{&dark});if(effectDistance)R.call(effectDistance,s,{&offset});}
         return result;
     }
     void setText(UILabel &l,const std::string &value){if(l.text&&l.value!=value){l.value=value;R.call(textValue,l.text,{R.string_new(value.c_str())});}}
@@ -107,7 +108,7 @@ struct NativeUI {
         UIWidget widget;widget.root=go;widget.layer=layer;widget.action=action;widget.value=argument;widget.base=tint;
         if(px){placePx(go,cx,cy,w,h);widget.hit=pxRect(cx,cy,w,h);}else{place(go,anchors);widget.hit=anchorRect(anchors);}
         widget.image=paint(go,tint,true);
-        widget.label=label(go,"Label",{0,0,1,1},value,4,size,white,true);
+        widget.label=label(U.trans(go),"Label",{0,0,1,1},value,4,size,white,true);
         widgets.push_back(widget);return (int)widgets.size()-1;
     }
     // ---- lifecycle
@@ -141,7 +142,7 @@ struct NativeUI {
     bool create(int w,int h){
         TraceScope trace("create mod canvas");
         if(w<=0||h<=0)return false;
-        screenW=w;screenH=h;
+        screenW=w;screenH=h;unit=1;
         font=R.pin(findFont());if(!font){log("UI waits for a font");return false;}
         canvasGO=node(nullptr,"GrannyTacticalCanvas");if(!canvasGO)return false;
         Obj canvasComponent=U.add(canvasGO,canvas);
@@ -149,7 +150,9 @@ struct NativeUI {
         // Above Granny's buttons (orders 0-5), below her pause menu (8), black screens (10) and ads (50).
         int order=6;if(sortingOrder)R.call(sortingOrder,canvasComponent,{&order});
         int mode=renderMode?R.value<int>(R.call(renderMode,canvasComponent)):-1;
-        if(mode==2)attachToGameCanvas(canvasComponent);
+        // Canvas.set_renderMode is stripped and a new Canvas starts in world space (mode 2 on device),
+        // so the mod canvas is nested under one of Granny's gameplay overlay canvases.
+        if(mode!=0&&!attachToGameCanvas(canvasComponent))return false;
         if(raycaster){raycast=U.add(canvasGO,raycaster);U.enable(raycast,false);}
         root=U.trans(canvasGO);
         scopeRoot=node(root,"ScopeOverlay");place(scopeRoot,{0,0,1,1});
@@ -187,14 +190,31 @@ struct NativeUI {
     }
     // A new Canvas is expected to be ScreenSpaceOverlay. If the engine ever creates it in world
     // space, nest it under one of Granny's overlay canvases with its own sorting instead.
-    void attachToGameCanvas(Obj canvasComponent){
-        Array *list=U.objects(canvas);Obj host=nullptr;
-        if(list&&list->length<1000){auto items=(Obj*)list->data;for(size_t i=0;i<list->length;i++)if(items[i]!=canvasComponent&&R.value<int>(R.call(renderMode,items[i]))==0){host=items[i];break;}}
-        if(!host){log("Mod canvas is world-space and no overlay canvas was found");return;}
+    bool attachToGameCanvas(Obj canvasComponent){
+        // Prefer Granny's always-active gameplay canvases from level2; never the ad SDK canvases.
+        const char *preferred[]={"AllaTexter","DifferentSpritesAndButtons","All days texter","TheEndTexts"};
+        Array *list=U.objects(canvas);Obj host=nullptr;int rank=99;
+        if(list&&list->length<1000){
+            auto items=(Obj*)list->data;
+            for(size_t i=0;i<list->length;i++){
+                Obj c=items[i];if(c==canvasComponent||!U.alive(c))continue;
+                if(R.value<int>(R.call(renderMode,c))!=0)continue;
+                if(isRoot&&!R.value<bool>(R.call(isRoot,c)))continue;
+                std::string path=U.path(U.trans(c,true));
+                if(path.find("Applovin")!=std::string::npos||path.find("Ads")!=std::string::npos||path.find("Black")!=std::string::npos)continue;
+                std::string name=U.name(c);int r=50;
+                for(int k=0;k<4;k++)if(name==preferred[k])r=k;
+                if(r<rank){rank=r;host=c;}
+            }
+        }
+        if(!host){log("Mod canvas waits for a gameplay overlay canvas");return false;}
         U.parent(U.trans(canvasGO),U.trans(host,true));place(canvasGO,{0,0,1,1});
         bool yes=true;if(overrideSorting)R.call(overrideSorting,canvasComponent,{&yes});
         int order=6;if(sortingOrder)R.call(sortingOrder,canvasComponent,{&order});
-        log("Mod canvas nested under game canvas "+U.path(U.trans(host,true)));
+        float scale=scaleFactor?R.value<float>(R.call(scaleFactor,host)):1;
+        unit=scale>.05f?1/scale:1;
+        std::ostringstream s;s<<"Mod canvas nested under "<<U.path(U.trans(host,true))<<", scaleFactor="<<scale;log(s.str());
+        return true;
     }
     void createWheel(){
         wheel=node(root,"BuyWheel");place(wheel,{0,0,1,1});Obj t=U.trans(wheel);

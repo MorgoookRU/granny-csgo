@@ -21,7 +21,7 @@
 #include "weapons_generated.h"
 #include "target_layout.h"
 
-#define MOD_ITERATION "9"
+#define MOD_ITERATION "10"
 
 using Obj = void *;
 struct Klass; struct Method; struct Field; struct Type;
@@ -112,6 +112,8 @@ struct Runtime {
     void (*gchandle_free)(uint32_t);
     void (*free_mem)(void *);
     void *(*resolve_icall)(const char *)=nullptr;
+    Klass *(*class_from_type)(const Type *)=nullptr;
+    bool (*type_is_byref)(const Type *)=nullptr;
     std::unordered_map<std::string,Klass *> classes;
     std::unordered_map<std::string,const Method *> methods;
     std::unordered_map<std::string,Field *> fields;
@@ -158,6 +160,8 @@ struct Runtime {
         BIND(free_mem,"il2cpp_free")
 #undef BIND
         resolve_icall=reinterpret_cast<decltype(resolve_icall)>(dlsym(handle,"il2cpp_resolve_icall"));
+        class_from_type=reinterpret_cast<decltype(class_from_type)>(dlsym(handle,"il2cpp_class_from_type"));
+        type_is_byref=reinterpret_cast<decltype(type_is_byref)>(dlsym(handle,"il2cpp_type_is_byref"));
         return true;
     }
     std::string name(Klass *c){return c?std::string(class_get_namespace(c))+"."+class_get_name(c):"null";}
@@ -219,6 +223,16 @@ struct Runtime {
         std::vector<void *> params(args);
         if(params.size()!=method_get_param_count(m)){
             std::string method=method_get_name(m);failure("arguments:"+method,"Skipped wrong argument count: "+method);return nullptr;
+        }
+        // Reference arguments are passed as object pointers; a wrong type (for example a GameObject
+        // where a Transform is expected) crashes inside libunity, so it is rejected and logged here.
+        if(class_from_type)for(size_t i=0;i<params.size();i++){
+            const Type *t=method_get_param(m,(uint32_t)i);if(!t||(type_is_byref&&type_is_byref(t))||!params[i])continue;
+            Klass *expected=class_from_type(t);if(!expected||class_is_valuetype(expected))continue;
+            Klass *actual=object_get_class(params[i]);
+            if(!class_is_assignable_from(expected,actual)){
+                std::string method=method_get_name(m);failure("argument:"+method+":"+std::to_string(i),"Skipped invalid argument "+std::to_string(i)+" for "+method+": expected="+name(expected)+" actual="+name(actual));return nullptr;
+            }
         }
         Obj exception=nullptr;Obj result=runtime_invoke(m,self,params.empty()?nullptr:params.data(),&exception);
         if(exception){char message[2048]{};format_exception(exception,message,sizeof(message));std::string method=method_get_name(m);failure("exception:"+method+":"+message,"Unity exception in "+method+": "+message);return nullptr;}
@@ -427,7 +441,6 @@ static void applyFrameRate(bool force){
 
 // ---------------------------------------------------------------- materials and models
 static Obj makeMesh(){
-    TraceScope trace("mesh allocation");
     static const V3 v[]={
       {-0.5f,-0.5f,0.5f},{0.5f,-0.5f,0.5f},{0.5f,0.5f,0.5f},{-0.5f,0.5f,0.5f},
       {0.5f,-0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},{-0.5f,0.5f,-0.5f},{0.5f,0.5f,-0.5f},
@@ -445,7 +458,6 @@ static Obj makeMesh(){
     R.call(U.setVertices,mesh,{vertices});R.call(U.setNormals,mesh,{ns});R.call(U.setTriangles,mesh,{ts});return mesh;
 }
 static bool makeMaterials(){
-    TraceScope trace("scene materials");
     // Granny's house is dark and most scene materials use Mobile/Diffuse, which has no _Color.
     // These shaders are present in this build; self-illumination keeps models readable at night.
     const char *shaders[]={"Legacy Shaders/Self-Illumin/Diffuse","Legacy Shaders/Diffuse","Sprites/Default","Hidden/Internal-Colored"};
@@ -482,7 +494,6 @@ static Obj box(Obj parent,const char *name,V3 position,V3 size,int material,int 
     R.call(U.setMesh,filter,{cubeMesh});R.call(U.setMaterial,renderer,{mats[material]});return root;
 }
 static void weaponModel(){
-    TraceScope trace("weapon model");
     if(!cubeMesh||!U.alive(aimTransform)){log("Weapon model deferred: no aim transform");return;}
     if(U.alive(gun))U.remove(gun);
     worldRoots.erase(std::remove(worldRoots.begin(),worldRoots.end(),gun),worldRoots.end());
@@ -518,7 +529,6 @@ static V3 spawnPosition(int i){
     return U.navPoint(p);
 }
 static void spawnBots(){
-    TraceScope trace("spawn four bots");
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(U.alive(b.root))U.remove(b.root);b={};b.weapon=(int[]){17,18,11,7}[i];
         b.root=U.newGO("CSGO_Bot");U.active(b.root,false);worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
@@ -568,7 +578,6 @@ struct MoveState {V3 velocity{};float vy=0,air=0,budget=0;bool grounded=true,jum
 static MoveState mv;
 static void resetMovement(){mv=MoveState{};}
 static void adoptController(Obj self){
-    TraceScope trace("adopt gameplay controller");
     releaseWorld();
     player=R.pin(self);playerTransform=R.pin(U.trans(self,true));
     character=R.field<Obj>(self,U.fps,"character");

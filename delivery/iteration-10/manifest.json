@@ -1,0 +1,12 @@
+{
+  "tag": "iteration-10",
+  "filename": "granny-tactical-iteration-10.apk",
+  "bytes": 210514022,
+  "sha256": "96676ebcdafcfff8c5a3180de54b4120a96fa2edcb783959210aa6e03d9b2612",
+  "mode": "patch",
+  "base_tag": "iteration-09",
+  "base_filename": "granny-tactical-iteration-09.apk",
+  "base_sha256": "9a1cccb1b6e56e361cffa06182b2d165f77a1172e236db8078b6b9be2f335f09",
+  "patch_filename": "iteration-09-to-10.bsdiff",
+  "patch_sha256": "697a955a1cc78655fe83b17ac453bbdec35be23f5856869e29ef9ff96e38e9dc"
+}

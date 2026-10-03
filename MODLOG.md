@@ -390,3 +390,32 @@
   Подписан новым тестовым ключом: ключ итераций 1–8 недоступен, установка
   требует удаления старой версии. Доставка — bsdiff4-патч в `delivery/iteration-09`.
 - На Samsung девятая сборка ещё не запускалась.
+- Итерация 9 опубликована: Actions 37148395764, asset 608406753, SHA-256
+  совпал с локальной сборкой `9a1cccb1…`.
+
+## 2026-10-03 — краш создания интерфейса, итерация 10
+
+- Отчёт APK 9 с SM-S916N: API привязан, контроллер принят (waypoints=16),
+  физика 1/75 → 1/60 с подтверждена `get_fixedDeltaTime`=0.0166667, камера
+  найдена по пути `…/Main Camera/Camera`, материал Self-Illumin, оружие и боты
+  созданы. Через секунду — SIGSEGV SEGV_MAPERR в libunity (pc 0x66b6d4) из
+  `il2cpp_runtime_invoke`, вызванного модом.
+- Последние CALL: `.ctor`, `get_transform`, `SetParent` сразу после фона первой
+  кнопки FIRE. Причина: `label(go,…)` передавал GameObject как parent, и
+  `Transform.SetParent(Transform,bool)` получал объект неверного типа.
+- `get_renderMode` нового Canvas вернул 2 (World Space); запасная ветка
+  выбрала `ApplovinManager/BlackScreenAdsHolder`. icall `set_renderMode` в
+  libunity не зарегистрирован.
+- Исправлено: родитель подписи — Transform кнопки; Canvas мода вкладывается в
+  корневой overlay-канвас Granny с приоритетом `AllaTexter`,
+  `DifferentSpritesAndButtons`, `All days texter`, `TheEndTexts`; рекламные и
+  чёрные экраны исключены; пиксельные размеры и шрифты делятся на
+  `scaleFactor` хоста; override sorting, порядок 6.
+- `Runtime::call` проверяет типы всех ссылочных аргументов через
+  `il2cpp_class_from_type`/`il2cpp_type_is_byref`; несовпадение пропускается и
+  пишется в журнал вместо падения. Трассировка CALL оставлена только для
+  создания интерфейса.
+- Размеры RaycastHit (44), NavMeshHit (36) и Touch (68) повторно сверены с
+  дампом. API-проверка: 107 методов/полей.
+- APK 10 собран из APK 9 тем же ключом (versionCode 101), ставится поверх.
+  Доставка — bsdiff4-патч 9 → 10 в `delivery/iteration-10`.

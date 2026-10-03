@@ -1,0 +1,39 @@
+{
+  "tag": "iteration-10",
+  "filename": "granny-tactical-iteration-10.apk",
+  "bytes": 210514022,
+  "sha256": "96676ebcdafcfff8c5a3180de54b4120a96fa2edcb783959210aa6e03d9b2612",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.dvloper.granny",
+  "architecture": "arm64-v8a",
+  "version_code": 101,
+  "signing_key": "same test key as iteration 9; installs over iteration 9",
+  "built_from": "iteration-09 APK with libgranny_csgo.so, classes6.dex and AndroidManifest.xml replaced",
+  "android_install_verified": false,
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": true,
+  "native_mode": 2,
+  "automatic_game_launch": true,
+  "independent_report_icon": true,
+  "verified_original_elf_build_id": "801a3345802f6969e7abce2c46285bdc5e8bb666",
+  "hooks": [
+    "FPSControllerNEW.FixedUpdate",
+    "MenuImageSwitcher.Start",
+    "CharacterController.Move"
+  ],
+  "player_camera_path": "Player/CameraShakeAnim/CameraPivot/Main Camera/Camera",
+  "ui": "mod canvas nested under Granny gameplay overlay canvas (AllaTexter), override sorting 6, scaled by host scaleFactor",
+  "buy_menu": "CS:GO wheel: 6 categories, item ring, stats panel",
+  "movement": "acceleration, friction, air momentum, jump with fall-time compensation",
+  "physics_rate_hz": 60,
+  "il2cpp_api_check": "107 methods/fields present in metadata dump",
+  "ui_layout_overlap_check": [
+    "2340x1080",
+    "2400x1080",
+    "1920x1080",
+    "1280x800",
+    "2048x1536"
+  ],
+  "argument_type_guard": true,
+  "iteration_09_device_result": "camera, 60 Hz physics, models and bots worked; SIGSEGV in UI label SetParent"
+}

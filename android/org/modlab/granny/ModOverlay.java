@@ -14,7 +14,7 @@ public final class ModOverlay {
     private static SoundPool sounds;
     private static final int[] soundIds=new int[8];
     public static void attach(final Activity activity) {
-        CrashJournal.append(activity,"Iteration 9 Java bridge attached; no Android gameplay views");
+        CrashJournal.append(activity,"Iteration 10 Java bridge attached; no Android gameplay views");
         if(activity.getIntent().getBooleanExtra("without_mod",false)) {
             CrashJournal.append(activity,"Explicit diagnostic launch without native module");
             return;
