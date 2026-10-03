@@ -1,0 +1,13 @@
+{
+  "tag": "iteration-03",
+  "filename": "granny-tactical-iteration-03.apk",
+  "bytes": 210473062,
+  "sha256": "31243d6060f3f45045aa9a484972a4876060fffb00183ed20bff7f860441bfa5",
+  "package": "com.modlab.grannycsgo",
+  "architecture": "arm64-v8a",
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": false,
+  "independent_diagnostic_launcher": true,
+  "unity_process": ":game",
+  "sdk_startup_providers_enabled": false
+}

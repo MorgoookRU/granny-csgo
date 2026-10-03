@@ -99,6 +99,73 @@ def patch(data, package='com.modlab.grannycsgo', label='Granny Tactical Lab · 1
     struct.pack_into('<I',result,4,len(result))
     return bytes(result),changes
 
+def diagnostic_launcher(data):
+    """Keep resource IDs intact while separating the launcher from Unity startup."""
+    chunks=[]; offset=U16(data,2)
+    while offset<len(data):
+        size=U32(data,offset+4); chunks.append(bytearray(data[offset:offset+size])); offset+=size
+    pool_index=next(i for i,c in enumerate(chunks) if U16(c,0)==1)
+    pool=StringPool(chunks[pool_index]); namespace=pool.index(ANDROID)
+    map_index=next(i for i,c in enumerate(chunks) if U16(c,0)==0x180)
+    resource_ids=list(struct.unpack_from('<'+'I'*((len(chunks[map_index])-8)//4),chunks[map_index],8))
+    ids={'name':0x01010003,'enabled':0x0101000e,'exported':0x01010010,'process':0x01010011}
+    def attr(name,value):
+        index=pool.index(name)
+        while len(resource_ids)<=index:resource_ids.append(0)
+        resource_ids[index]=ids[name]
+        if isinstance(value,bool): raw=0xffffffff; kind=0x12; typed=int(value)
+        else:raw=pool.index(value);kind=3;typed=raw
+        return struct.pack('<IIIHBBI',namespace,index,raw,8,0,kind,typed)
+    def start(tag,attributes=()):
+        tag_index=pool.index(tag); values=[attr(k,v) for k,v in attributes]
+        values.sort(key=lambda a:resource_ids[U32(a,4)])
+        return bytearray(struct.pack('<HHIII',0x102,16,36+20*len(values),0,0xffffffff)+
+            struct.pack('<IIHHHHHH',0xffffffff,tag_index,20,20,len(values),0,0,0)+b''.join(values))
+    def end(tag):
+        return bytearray(struct.pack('<HHIIIII',0x103,16,24,0,0xffffffff,0xffffffff,pool.index(tag)))
+    def attributes(chunk):
+        h=U16(chunk,2);begin=h+U16(chunk,h+8);stride=U16(chunk,h+10)
+        return {pool.values[U32(chunk,p+4)]:p for p in range(begin,begin+stride*U16(chunk,h+12),stride)}
+    def set_attr(chunk,name,value):
+        attrs=attributes(chunk); replacement=attr(name,value)
+        if name in attrs:chunk[attrs[name]:attrs[name]+20]=replacement
+        else:
+            h=U16(chunk,2);count=U16(chunk,h+12);chunk.extend(replacement)
+            struct.pack_into('<H',chunk,h+12,count+1);struct.pack_into('<I',chunk,4,len(chunk))
+        # aapt stores Android attributes ordered by resource ID.
+        h=U16(chunk,2);begin=h+U16(chunk,h+8);count=U16(chunk,h+12)
+        values=[chunk[begin+i*20:begin+(i+1)*20] for i in range(count)]
+        values.sort(key=lambda a:resource_ids[U32(a,4)] if U32(a,4)<len(resource_ids) else 0)
+        chunk[begin:begin+20*count]=b''.join(values)
+    def value(chunk,name):
+        p=attributes(chunk).get(name)
+        return pool.values[U32(chunk,p+16)] if p is not None and chunk[p+15]==3 else None
+    output=[];unity=False;skip_depth=0
+    for chunk in chunks:
+        kind=U16(chunk,0)
+        tag=pool.values[U32(chunk,20)] if kind in (0x102,0x103) else ''
+        if skip_depth:
+            if kind==0x102:skip_depth+=1
+            elif kind==0x103:skip_depth-=1
+            continue
+        if kind==0x102:
+            if tag=='application':set_attr(chunk,'name','org.modlab.granny.LabApplication')
+            if tag=='provider':set_attr(chunk,'enabled',False)
+            if tag=='activity':
+                unity=value(chunk,'name')=='com.unity3d.player.UnityPlayerActivity'
+                if unity:set_attr(chunk,'process',':game');set_attr(chunk,'exported',False)
+            if unity and tag=='intent-filter':skip_depth=1;continue
+        if kind==0x103 and tag=='activity':unity=False
+        if kind==0x103 and tag=='application':
+            output.extend([start('activity',[('name','org.modlab.granny.DiagnosticActivity'),('exported',True)]),
+                start('intent-filter'),start('action',[('name','android.intent.action.MAIN')]),end('action'),
+                start('category',[('name','android.intent.category.LAUNCHER')]),end('category'),end('intent-filter'),end('activity')])
+        output.append(chunk)
+    output[pool_index]=pool.build()
+    output[map_index]=bytearray(struct.pack('<HHI',0x180,8,8+4*len(resource_ids))+struct.pack('<'+'I'*len(resource_ids),*resource_ids))
+    result=bytearray(data[:U16(data,2)])+b''.join(output);struct.pack_into('<I',result,4,len(result))
+    return bytes(result)
+
 if __name__=='__main__':
     import sys
     source,destination=map(Path,sys.argv[1:3]);result,changes=patch(source.read_bytes());destination.write_bytes(result);print(changes)

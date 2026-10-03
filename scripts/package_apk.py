@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
-from patch_manifest import patch
+from patch_manifest import patch, diagnostic_launcher
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -32,11 +32,17 @@ def build(lab: Path, iteration: int):
         assert body.count('    return-void')==1
         source=source[:start]+body.replace('    return-void',hook+'    return-void')+source[end:]
         activity.write_text(source)
+    startup='    invoke-static {p0}, Lorg/modlab/granny/CrashJournal;->unityStarting(Landroid/content/Context;)V\n\n'
+    if iteration >= 3 and startup not in source:
+        source=activity.read_text();start=source.index('.method protected onCreate(Landroid/os/Bundle;)V')
+        position=source.index('    .locals 2',start)+len('    .locals 2')
+        activity.write_text(source[:position]+'\n\n'+startup+source[position:])
     classes=build/'java/classes';dex=build/'java/dex'
+    shutil.rmtree(classes,ignore_errors=True);shutil.rmtree(dex,ignore_errors=True)
     classes.mkdir(parents=True,exist_ok=True);dex.mkdir(parents=True,exist_ok=True)
     android=tools/'android-35/android.jar'
     run(['java','com.sun.tools.javac.Main','-source','8','-target','8','-Xlint:-options','-encoding','UTF-8','-classpath',android,'-d',classes,
-         ROOT/'android/org/modlab/granny/ModOverlay.java',generated/'Weapons.java'])
+         *sorted((ROOT/'android/org/modlab/granny').glob('*.java')),generated/'Weapons.java'])
     classfiles=sorted(classes.rglob('*.class'))
     run(['java','-cp',tools/'android-15/lib/d8.jar','com.android.tools.r8.D8','--lib',android,'--min-api','24','--output',dex,*classfiles])
     raw=build/'game-rebuilt.apk'
@@ -53,6 +59,7 @@ def build(lab: Path, iteration: int):
             if name=='stamp-cert-sha256' or (name.startswith('META-INF/') and (name.endswith(('.SF','.RSA','.DSA','.EC')) or name=='META-INF/MANIFEST.MF')):continue
             data=game.read(entry)
             if name=='AndroidManifest.xml':data,changes=patch(data,label=f'Granny Tactical Lab · {iteration}',version_code=91+iteration);print('Manifest changes:',changes,flush=True)
+            if name=='AndroidManifest.xml' and iteration >= 3:data=diagnostic_launcher(data)
             output.writestr(entry,data)
         for entry in native.infolist():
             if entry.filename.startswith('lib/') and entry.filename.endswith('.so'):output.writestr(entry,native.read(entry))
