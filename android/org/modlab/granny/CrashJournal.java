@@ -62,7 +62,7 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 7\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 8\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
@@ -72,6 +72,7 @@ public final class CrashJournal {
         out.append("\nRESOURCE LOOKUP\n").append(resourceStatus(context,"game_view_content_description","string"))
            .append('\n').append(resourceStatus(context,"unitySurfaceView","id")).append('\n');
         out.append("\nSTARTUP JOURNAL\n").append(file(context, FILE));
+        out.append("\nNATIVE STARTUP (current session, preserved beginning)\n").append(file(context, "granny-csgo-startup.log"));
         out.append("\nMOD JOURNAL\n").append(file(context, "granny-csgo.log"));
         if (android.os.Build.VERSION.SDK_INT >= 30) {
             try {

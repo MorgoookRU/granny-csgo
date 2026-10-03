@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "shadowhook.h"
 #include "combat.h"
@@ -43,6 +44,8 @@ static jclass overlay;
 static jmethodID soundCallback;
 static std::mutex logMutex, hudMutex;
 static FILE *logFile;
+static FILE *startupFile;
+static size_t startupBytes=0;
 static std::string readyFile;
 static std::string bootStatus="Подключение мода…", hud="{}";
 static std::atomic<int> fireInput{0}, reloadInput{0}, buyInput{-1}, selectInput{-1};
@@ -56,6 +59,11 @@ static void log(const std::string &s){
     std::lock_guard<std::mutex> lock(logMutex);
     __android_log_print(ANDROID_LOG_INFO,"GrannyCSGO","%s",s.c_str());
     if(logFile){auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();fprintf(logFile,"[%lld pid=%d] %s\n",(long long)ms,getpid(),s.c_str());fflush(logFile);}
+    // Preserve the beginning of this session separately from the rolling journal.
+    if(startupFile&&startupBytes<32000&&s.compare(0,5,"CALL ")){
+        int bytes=fprintf(startupFile,"[pid=%d] %s\n",getpid(),s.c_str());
+        if(bytes>0)startupBytes+=bytes;fflush(startupFile);
+    }
 }
 TraceScope::TraceScope(const char *stage){++traceDepth;log(std::string("STAGE ")+stage);}
 static void setStatus(const std::string &s){
@@ -76,6 +84,8 @@ struct Runtime {
     Klass *(*class_from_name)(const void *,const char *,const char *);
     Klass *(*class_get_parent)(Klass *);
     Klass *(*object_get_class)(Obj);
+    const char *(*class_get_name)(Klass *);
+    const char *(*class_get_namespace)(Klass *);
     bool (*class_is_valuetype)(Klass *);
     bool (*class_is_assignable_from)(Klass *,Klass *);
     int32_t (*class_value_size)(Klass *,uint32_t *);
@@ -90,6 +100,7 @@ struct Runtime {
     const Type *(*class_get_type)(Klass *);
     Obj (*type_get_object)(const Type *);
     Field *(*class_get_field_from_name)(Klass *,const char *);
+    size_t (*field_get_offset)(Field *);
     void (*field_get_value)(Obj,Field *,void *);
     void (*field_set_value)(Obj,Field *,void *);
     Obj (*runtime_invoke)(const Method *,Obj,void **,Obj *);
@@ -108,6 +119,8 @@ struct Runtime {
     std::vector<uint32_t> roots;
     Klass *unityObject=nullptr;
     const Method *nativeAlive=nullptr;
+    Field *cachedPointer=nullptr;
+    std::unordered_set<std::string> failures;
     int errors=0;
 
     bool init(){
@@ -118,6 +131,8 @@ struct Runtime {
         BIND(class_from_name,"il2cpp_class_from_name")
         BIND(class_get_parent,"il2cpp_class_get_parent")
         BIND(object_get_class,"il2cpp_object_get_class")
+        BIND(class_get_name,"il2cpp_class_get_name")
+        BIND(class_get_namespace,"il2cpp_class_get_namespace")
         BIND(class_is_valuetype,"il2cpp_class_is_valuetype")
         BIND(class_is_assignable_from,"il2cpp_class_is_assignable_from")
         BIND(class_value_size,"il2cpp_class_value_size")
@@ -132,6 +147,7 @@ struct Runtime {
         BIND(class_get_type,"il2cpp_class_get_type")
         BIND(type_get_object,"il2cpp_type_get_object")
         BIND(class_get_field_from_name,"il2cpp_class_get_field_from_name")
+        BIND(field_get_offset,"il2cpp_field_get_offset")
         BIND(field_get_value,"il2cpp_field_get_value")
         BIND(field_set_value,"il2cpp_field_set_value")
         BIND(runtime_invoke,"il2cpp_runtime_invoke")
@@ -148,6 +164,16 @@ struct Runtime {
 #undef BIND
         return true;
     }
+    std::string name(Klass *c){return c?std::string(class_get_namespace(c))+"."+class_get_name(c):"null";}
+    void failure(const std::string &key,const std::string &message){
+        if(failures.size()<128&&failures.insert(key).second)log(message);
+    }
+    uintptr_t nativePointer(Obj o){
+        uintptr_t pointer=0;
+        if(o&&cachedPointer&&class_is_assignable_from(unityObject,object_get_class(o)))field_get_value(o,cachedPointer,&pointer);
+        return pointer;
+    }
+    bool alive(Obj o){return nativePointer(o)!=0;}
     Klass *klass(const char *ns,const char *name){
         std::string key=std::string(ns)+"."+name;
         auto f=classes.find(key);if(f!=classes.end())return f->second;
@@ -178,27 +204,31 @@ struct Runtime {
         if(!m)return nullptr;
         uint32_t impl=0;bool instance=(method_get_flags(m,&impl)&0x10)==0;
         if(instance&&(!self||!class_is_assignable_from(method_get_class(m),object_get_class(self)))){
-            if(errors++<30)log(std::string("Skipped invalid receiver: ")+method_get_name(m));return nullptr;
+            std::string method=method_get_name(m);failure("receiver:"+method,"Skipped invalid receiver: "+method+" expected="+name(method_get_class(m))+" actual="+name(self?object_get_class(self):nullptr));return nullptr;
         }
-        if(instance&&nativeAlive&&unityObject&&strcmp(method_get_name(m),".ctor")&&class_is_assignable_from(unityObject,object_get_class(self))){
-            if(!value<bool>(call(nativeAlive,nullptr,{self}))){
-                if(errors++<30)log(std::string("Skipped destroyed Unity object: ")+method_get_name(m));return nullptr;
+        if(instance&&cachedPointer&&unityObject&&strcmp(method_get_name(m),".ctor")&&class_is_assignable_from(unityObject,object_get_class(self))){
+            if(!alive(self)){
+                std::string method=method_get_name(m);failure("destroyed:"+method,"Skipped destroyed Unity object: "+method);return nullptr;
             }
         }
         if(traceDepth)log(std::string("CALL ")+method_get_name(m));
         std::vector<void *> params(args);
+        if(params.size()!=method_get_param_count(m)){
+            std::string method=method_get_name(m);failure("arguments:"+method,"Skipped wrong argument count: "+method);return nullptr;
+        }
         Obj exception=nullptr;Obj result=runtime_invoke(m,self,params.empty()?nullptr:params.data(),&exception);
-        if(exception){if(errors++<30){char message[2048]{};format_exception(exception,message,sizeof(message));log(std::string("Unity exception in ")+method_get_name(m)+": "+message);}return nullptr;}
+        if(exception){char message[2048]{};format_exception(exception,message,sizeof(message));std::string method=method_get_name(m);failure("exception:"+method+":"+message,"Unity exception in "+method+": "+message);return nullptr;}
         return result;
     }
     template<class T>T value(Obj o){
         T v{};if(!o)return v;Klass *c=object_get_class(o);uint32_t alignment=0;
-        if(!c||!class_is_valuetype(c)||class_value_size(c,&alignment)!=(int)sizeof(v)){
-            if(errors++<30)log("Skipped unexpected boxed value layout");return v;
+        int size=c&&class_is_valuetype(c)?class_value_size(c,&alignment):-1;
+        if(size!=(int)sizeof(v)){
+            std::string type=name(c);failure("value:"+type+":"+std::to_string(sizeof(v)),"Skipped boxed value: type="+type+" size="+std::to_string(size)+" expected="+std::to_string(sizeof(v)));return v;
         }
         void *raw=object_unbox(o);if(raw)memcpy(&v,raw,sizeof(v));return v;
     }
-    template<class T>T field(Obj o,Klass *c,const char *name){T v{};auto f=class_get_field_from_name(c,name);if(o&&f)field_get_value(o,f,&v);return v;}
+    template<class T>T field(Obj o,Klass *c,const char *name){T v{};auto f=c?class_get_field_from_name(c,name):nullptr;if(o&&f)field_get_value(o,f,&v);else if(!f)failure(std::string("field:")+name,std::string("Unavailable field: ")+name);return v;}
     template<class T>void set(Obj o,Klass *c,const char *name,T v){auto f=class_get_field_from_name(c,name);if(o&&f)field_set_value(o,f,&v);}
     Obj type(Klass *c){return c?type_get_object(class_get_type(c)):nullptr;}
     Obj pin(Obj o){if(o)roots.push_back(gchandle_new(o,false));return o;}
@@ -207,9 +237,9 @@ struct Runtime {
 
 struct Unity {
     Klass *object,*gameObject,*component,*transform,*renderer,*material,*mesh,*meshFilter,*meshRenderer;
-    Klass *camera,*time,*physics,*hit,*nav,*agent,*capsule,*vec,*integer,*fps,*granny;
+    Klass *camera,*time,*physics,*hit,*nav,*agent,*capsule,*controller,*vec,*integer,*fps,*granny;
     const Method *objectAlive,*destroy,*findObjects,*goCtor,*getTransform,*componentTransform,*componentGO;
-    const Method *addComponent,*getComponent,*setActive,*setLayer,*getPosition,*setPosition,*getForward,*getRight;
+    const Method *addComponent,*getComponent,*getComponentInChildren,*setActive,*setLayer,*getPosition,*setPosition,*getForward,*getRight;
     const Method *getParent,*setParent,*setLocalPosition,*setLocalScale,*setEuler,*rotate,*lookAt;
     const Method *meshCtor,*setVertices,*setNormals,*setTriangles,*setMesh,*getMaterial,*setMaterial,*matCtor,*matColor,*matTexture;
     const Method *cameraMain,*setFov,*setClip,*fixedDelta,*raycast,*hitTransform,*findById,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
@@ -224,6 +254,7 @@ struct Unity {
         CLASS(time,"UnityEngine","Time") CLASS(physics,"UnityEngine","Physics")
         CLASS(hit,"UnityEngine","RaycastHit") CLASS(nav,"UnityEngine.AI","NavMesh")
         CLASS(agent,"UnityEngine.AI","NavMeshAgent") CLASS(capsule,"UnityEngine","CapsuleCollider")
+        CLASS(controller,"UnityEngine","CharacterController")
         CLASS(vec,"UnityEngine","Vector3") CLASS(integer,"System","Int32")
         CLASS(fps,"","FPSControllerNEW") CLASS(granny,"","EnemyAIGranny")
 #undef CLASS
@@ -234,6 +265,7 @@ struct Unity {
         M(goCtor,gameObject,".ctor","System.String");
         M(getTransform,gameObject,"get_transform");M(componentTransform,component,"get_transform");M(componentGO,component,"get_gameObject");
         M(addComponent,gameObject,"AddComponent","System.Type");M(getComponent,gameObject,"GetComponent","System.Type");
+        M(getComponentInChildren,gameObject,"GetComponentInChildren","System.Type");
         M(setActive,gameObject,"SetActive","System.Boolean");M(setLayer,gameObject,"set_layer","System.Int32");
         M(getPosition,transform,"get_position");M(setPosition,transform,"set_position","UnityEngine.Vector3");
         M(getForward,transform,"get_forward");M(getRight,transform,"get_right");M(getParent,transform,"get_parent");
@@ -250,14 +282,17 @@ struct Unity {
         M(findById,object,"FindObjectFromInstanceID","System.Int32");
         M(setDestination,agent,"SetDestination","UnityEngine.Vector3");M(onNav,agent,"get_isOnNavMesh");M(agentSpeed,agent,"set_speed","System.Single");M(agentStop,agent,"set_stoppingDistance","System.Single");
         M(capsuleHeight,capsule,"set_height","System.Single");M(capsuleRadius,capsule,"set_radius","System.Single");M(capsuleCenter,capsule,"set_center","UnityEngine.Vector3");
-        M(getVelocity,R.klass("UnityEngine","CharacterController"),"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");
+        M(getVelocity,controller,"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");
 #undef M
         const Method *required[]={objectAlive,destroy,findObjects,goCtor,getTransform,componentTransform,componentGO,addComponent,setActive,getPosition,setPosition,getForward,getRight,setParent,setLocalPosition,setLocalScale,setEuler,meshCtor,setVertices,setNormals,setTriangles,setMesh,getMaterial,setMaterial,matCtor,matColor,cameraMain,raycast,hitTransform};
         for(auto m:required)if(!m){setStatus("Ошибка подключения Unity. Открой журнал мода.");return false;}
         R.unityObject=object;R.nativeAlive=objectAlive;
+        R.cachedPointer=R.class_get_field_from_name(object,"m_CachedPtr");
+        if(!R.cachedPointer||R.field_get_offset(R.cachedPointer)!=0x10){setStatus("Мод не подключён: изменилось поле нативного объекта Unity");return false;}
+        log("Unity object guard uses verified m_CachedPtr offset 0x10");
         return true;
     }
-    bool alive(Obj o){return o&&R.value<bool>(R.call(objectAlive,nullptr,{o}));}
+    bool alive(Obj o){return R.alive(o);}
     Obj trans(Obj o,bool component=false){return o?R.call(component?componentTransform:getTransform,o):nullptr;}
     V3 pos(Obj t){return R.value<V3>(R.call(getPosition,t));}
     V3 forward(Obj t){return R.value<V3>(R.call(getForward,t));}
@@ -295,7 +330,9 @@ static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnable
 static void resetNativeUI();
 static void updateNativeUI(bool inGame);
 static void inputNativeUI();
-static float sceneRetry=0;
+static std::chrono::steady_clock::time_point sceneProbeAt{},sceneLogAt{};
+static std::string pendingScene;
+static bool sceneReady=false;
 static int burstLeft=0;static float hudTimer=0;
 static std::string notification="Открой магазин, выбери оружие и начни игру",killfeed;
 struct Bot {Obj root=nullptr,transform=nullptr,agent=nullptr,head=nullptr,legs[2]{};float hp=100,armor=50,nextShot=0,respawn=0,blind=0,lastSeen=-100;V3 target{};int weapon=17;};
@@ -389,15 +426,32 @@ static void spawnBots(){
     notification="Добавлены 4 тестовых бота";
 }
 static bool resetWorld(Obj self){
-    TraceScope trace("reset gameplay scene");
-    sceneRetry=.5f;
     Obj readyCharacter=R.field<Obj>(self,U.fps,"character");
-    Obj readyCamera=R.call(U.cameraMain);
-    if(!U.alive(readyCharacter)||!U.alive(readyCamera)){log("Scene pending: player and camera not ready");return false;}
+    Obj playerGO=R.call(U.componentGO,self);
+    if(!U.alive(readyCharacter)&&U.alive(playerGO))readyCharacter=U.get(playerGO,U.controller);
+    Obj pivot=R.field<Obj>(self,U.fps,"cameraPivot");
+    Obj pivotGO=U.alive(pivot)?R.call(U.componentGO,pivot):nullptr;
+    Obj readyCamera=U.alive(pivotGO)?U.get(pivotGO,U.camera):nullptr;
+    if(!U.alive(readyCamera)&&U.alive(pivotGO))readyCamera=R.call(U.getComponentInChildren,pivotGO,{R.type(U.camera)});
+    if(!U.alive(readyCamera))readyCamera=R.call(U.cameraMain);
+    bool characterReady=U.alive(readyCharacter),cameraReady=U.alive(readyCamera);
+    if(!characterReady||!cameraReady){
+        std::string reason=std::string(characterReady?"character ready":"character missing")+"; "+(cameraReady?"camera ready":"camera missing");
+        auto time=std::chrono::steady_clock::now();
+        if(reason!=pendingScene||time>=sceneLogAt){
+            std::ostringstream details;details<<"Scene pending: "<<reason<<"; player class="<<R.name(R.object_get_class(self))
+                <<"; player native=0x"<<std::hex<<R.nativePointer(self)<<"; character="<<readyCharacter
+                <<" native=0x"<<R.nativePointer(readyCharacter)<<"; camera="<<readyCamera<<" native=0x"<<R.nativePointer(readyCamera)<<"; pivot="<<pivot;
+            log(details.str());pendingScene=reason;sceneLogAt=time+std::chrono::seconds(5);
+        }
+        return false;
+    }
+    TraceScope trace("initialize gameplay scene from player components");
+    pendingScene.clear();sceneReady=false;
     resetNativeUI();
     for(auto root:worldRoots)U.remove(root);worldRoots.clear();R.clearRoots();
-    player=R.pin(self);playerTransform=R.pin(U.trans(self,true));character=R.pin(R.field<Obj>(self,U.fps,"character"));
-    cameraObject=R.pin(R.call(U.cameraMain));cameraTransform=R.pin(U.trans(cameraObject,true));
+    player=R.pin(self);playerTransform=R.pin(U.trans(self,true));character=R.pin(readyCharacter);
+    cameraObject=R.pin(readyCamera);cameraTransform=R.pin(U.trans(cameraObject,true));
     combat_init(&combat,weapons,WEAPON_COUNT);now=0;hudTimer=0;flash=0;grannyHP=100;grannyReset=0;
     combat.owned[17]=1;combat.weapon=17;
     scoped=burstMode=wasCaught=false;burstLeft=0;recoilPitch=recoilYaw=lastPitch=lastYaw=0;
@@ -405,10 +459,12 @@ static bool resetWorld(Obj self){
     waypointCount=0;
     Obj grannyGO=R.field<Obj>(self,U.fps,"granny");Obj granny=grannyGO?U.get(grannyGO,U.granny):nullptr;
     if(granny){for(int i=1;i<=16;i++){std::string n="nav"+std::to_string(i);Obj t=R.field<Obj>(granny,U.granny,n.c_str());if(U.alive(t))waypoints[waypointCount++]=U.pos(t);}}
-    if(!U.alive(cameraObject)||!makeMaterials()){notification="Ожидание камеры и материалов";return false;}
+    if(!U.alive(playerTransform)||!U.alive(cameraTransform)||!makeMaterials()){notification="Ожидание камеры и материалов";return false;}
     float fov=75,clip=.04f;R.call(U.setFov,cameraObject,{&fov});R.call(U.setClip,cameraObject,{&clip});
-    weaponModel();if(botsEnabled)spawnBots();setStatus("Мод подключён");log("Scene initialized; waypoints="+std::to_string(waypointCount));
-    return true;
+    weaponModel();
+    if(!U.alive(gun)||!U.alive(gunTransform)){log("Scene initialization waiting for weapon model");return false;}
+    if(botsEnabled)spawnBots();setStatus("Мод подключён");sceneReady=true;
+    log("Scene initialized; AK-47 equipped; waypoints="+std::to_string(waypointCount));return true;
 }
 static bool smokeBetween(V3 a,V3 b){
     V3 delta=b-a;float n=dot(delta,delta);if(n<.01f)return false;
@@ -539,9 +595,15 @@ static void makeHud(bool inGame){
 }
 static void tick(Obj self){
     if(paused){fireInput=0;return;}
+    if(sceneReady&&self!=player&&U.alive(player))return;
     float dt=R.value<float>(R.call(U.fixedDelta));dt=clamp(dt,.001f,.1f);
-    if(self!=player||!U.alive(cameraObject)){if(!resetWorld(self)){makeHud(false);return;}}
-    else if(!cubeMesh){sceneRetry-=dt;if(sceneRetry<=0&&!resetWorld(self)){makeHud(false);return;}}
+    if(self!=player||!U.alive(cameraObject)||!cubeMesh)sceneReady=false;
+    if(!sceneReady){
+        auto time=std::chrono::steady_clock::now();
+        if(time<sceneProbeAt)return;
+        sceneProbeAt=time+std::chrono::milliseconds(500);
+        if(!resetWorld(self)){makeHud(false);return;}
+    }
     if(!cameraTransform||!cubeMesh){makeHud(false);return;}
     now+=dt;
     bool caught=R.field<bool>(self,U.fps,"playerCaught");
@@ -596,7 +658,15 @@ static void hookedFixed(Obj self,const Method *method){
     if(!runtimeAttempted){
         runtimeAttempted=true;TraceScope trace("bind managed API on Unity gameplay thread");
         runtimeReady=R.init()&&U.bind();
-        if(runtimeReady)log("Managed API bound after original gameplay callback");
+        if(runtimeReady){
+            log("Managed API bound after original gameplay callback");
+            Obj boxed=R.call(U.objectAlive,nullptr,{self});
+            std::ostringstream state;state<<"First controller: class="<<R.name(R.object_get_class(self))<<" native=0x"<<std::hex<<R.nativePointer(self)
+                <<"; managed alive="<<std::dec<<R.value<bool>(boxed)<<"; boxed type="<<R.name(boxed?R.object_get_class(boxed):nullptr);
+            Field *field=R.class_get_field_from_name(U.fps,"character");
+            if(field)state<<"; character offset=0x"<<std::hex<<R.field_get_offset(field);
+            log(state.str());
+        }
     }
     if(runtimeReady)tick(self);inTick=false;
 }
@@ -653,9 +723,10 @@ extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(
     const char *p=env->GetStringUTFChars(path,nullptr);std::string directory=p;env->ReleaseStringUTFChars(path,p);
     std::string filename=directory+"/granny-csgo.log";
     if(token){const char *value=env->GetStringUTFChars(token,nullptr);std::string id=value;env->ReleaseStringUTFChars(token,value);if(id.size()==36&&id.find_first_not_of("0123456789abcdef-")==std::string::npos)readyFile=directory+"/unity-ready-"+id;}
-    logFile=fopen(filename.c_str(),"a");overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
+    logFile=fopen(filename.c_str(),"a");startupFile=fopen((directory+"/granny-csgo-startup.log").c_str(),"w");
+    overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
     botsEnabled=mode>=2;
-    log("Granny Tactical Lab iteration 7 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
+    log("Granny Tactical Lab iteration 8 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
     std::thread(boot).detach();
 }
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeAction(JNIEnv *,jclass,jint action,jint value){
