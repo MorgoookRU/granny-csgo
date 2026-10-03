@@ -1,3 +1,6 @@
+**Пользователь сообщил: Android отказал в установке этой APK.**
+[Текущая версия — итерация 5](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-05).
+
 ## Исправление обнаруженной ошибки упаковки ресурсов
 
 Журнал с телефона показал Resources$NotFoundException (string ID 0)
