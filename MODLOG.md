@@ -300,3 +300,9 @@
   token сохраняется. Два игровых hooks и их ready marker не проверены на телефоне.
 - Native журнал включает pid; отчёт пытается читать native tombstone и для
   reason=2/status=11, отмечает SIGSEGV даже без трассировки. VersionCode 98.
+
+- Итерация 7 опубликована: Actions 37142473495 завершился успешно.
+  Asset 608267460, 210489446 байт, SHA-256
+  cc1e59561f0f8e64675fc55e3c32bce478ed242b657536e997fccabae1feb482.
+  Проверены подписи v2/v3, zipalign, два launcher entries, report affinity,
+  исходные ресурсы и native libraries, ELF targets. Проверка на Samsung ожидается.
