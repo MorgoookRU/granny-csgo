@@ -7,6 +7,7 @@ ARM64. Основа: Granny 1.8.12, Unity 6000.0.68f1, IL2CPP metadata 31.
 ## APK
 
 Текущая диагностическая версия: **Granny Tactical Lab · 2**.
+[Скачать итерацию 2](https://github.com/MorgoookRU/granny-csgo/releases/download/iteration-02/granny-tactical-iteration-02.apk).
 После сообщения о падении первой APK native-мод выключен по умолчанию.
 Сначала проверить меню и Practice; затем через **ВКЛ. МОД** выбрать
 **Оружие без ботов**. LOG включает сведения Android о предыдущем завершении.
@@ -59,7 +60,7 @@ ARM64. Основа: Granny 1.8.12, Unity 6000.0.68f1, IL2CPP metadata 31.
 
 ## GitHub и доставка APK
 
-Первая APK загружена:
+Архивная первая APK (сообщён вылет при старте на S23+):
 [скачать granny-tactical-iteration-01.apk](https://github.com/MorgoookRU/granny-csgo/releases/download/iteration-01/granny-tactical-iteration-01.apk).
 В [Release iteration-01](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-01)
 также опубликована контрольная сумма SHA-256.

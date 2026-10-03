@@ -1,5 +1,9 @@
 # Granny Tactical Lab · 1
 
+На Samsung Galaxy S23+ с Android 16 сообщён вылет сразу при открытии.
+Использовать [диагностическую итерацию 2](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-02)
+с модом, выключенным по умолчанию, чтобы определить источник падения.
+
 Первая тестовая ARM64-сборка для Samsung Galaxy S23+, Android 16.
 
 Включён код магазина, 42 предметов, стрельбы, перезарядки, отдачи,
@@ -15,4 +19,3 @@
 
 SHA-256:
 `681cef0ffaad06000781c5b07648de566744c38ea331e04ad28ec88021acb791`.
-
