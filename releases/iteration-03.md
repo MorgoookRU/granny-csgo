@@ -1,3 +1,6 @@
+**Журнал подтвердил падение Unity в этой версии из-за имени resource package.**
+[Исправление — итерация 4](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-04).
+
 ## Диагностика мгновенного падения
 
 Итерации 1 и 2 падают до меню на S23+ Android 16. Причина пока неизвестна.
