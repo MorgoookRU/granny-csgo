@@ -186,3 +186,20 @@
   31243d6060f3f45045aa9a484972a4876060fffb00183ed20bff7f860441bfa5.
   APK подписан прежним ключом; launcher в манифесте — DiagnosticActivity.
   Проверка запуска на телефоне и получение отчёта ещё требуются.
+
+## 2026-10-03 — установленная причина падения, итерация 4
+
+- Получен журнал с Samsung SM-S916N, Android 16 API 36, страницы памяти
+  4096 байт. Независимый экран итерации 3 работает, Unity падает и с
+  обычным графическим API, и с -force-gles.
+- Исключение: Resources$NotFoundException, String resource ID #0x0
+  в com.unity3d.player.N.<init>, SourceFile:127, до прикрепления ModOverlay.
+- По smali установлено обращение к game_view_content_description через
+  Resources.getIdentifier с Context.getPackageName(). Таблица ресурсов
+  APK оставалась в пакете com.dvloper.granny, manifest — com.modlab.grannycsgo.
+- Ошибка упаковки исправляется изменением фиксированного поля имени
+  ResTable_package в resources.arsc; IDs и chunks остаются прежними.
+- В отчёт добавлены ID/имя пакета/значение game_view_content_description
+  и unitySurfaceView. Диагностика, отдельный процесс и ручная загрузка мода
+  сохранены для следующей проверки.
+- Фон и механики пока не изменены: требуется подтверждение открытия меню.

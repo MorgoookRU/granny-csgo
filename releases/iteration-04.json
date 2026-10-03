@@ -1,0 +1,15 @@
+{
+  "tag": "iteration-04",
+  "filename": "granny-tactical-iteration-04.apk",
+  "bytes": 210473062,
+  "sha256": "dc02a002492dfabd2aa323e97f32a745387d2d9e763a578ea6c0612d9a1b0c04",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.modlab.grannycsgo",
+  "architecture": "arm64-v8a",
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": false,
+  "independent_diagnostic_launcher": true,
+  "unity_process": ":game",
+  "sdk_startup_providers_enabled": false,
+  "fix": "Rename ResTable_package to match manifest package and Context.getPackageName"
+}

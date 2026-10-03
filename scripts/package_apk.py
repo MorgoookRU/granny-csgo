@@ -13,6 +13,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 from patch_manifest import patch, diagnostic_launcher
+from patch_resources import rename_package
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -60,6 +61,8 @@ def build(lab: Path, iteration: int):
             data=game.read(entry)
             if name=='AndroidManifest.xml':data,changes=patch(data,label=f'Granny Tactical Lab · {iteration}',version_code=91+iteration);print('Manifest changes:',changes,flush=True)
             if name=='AndroidManifest.xml' and iteration >= 3:data=diagnostic_launcher(data)
+            if name=='resources.arsc':
+                data,changes=rename_package(data);print('Resource package changes:',changes,flush=True)
             output.writestr(entry,data)
         for entry in native.infolist():
             if entry.filename.startswith('lib/') and entry.filename.endswith('.so'):output.writestr(entry,native.read(entry))

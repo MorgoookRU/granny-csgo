@@ -15,7 +15,7 @@ public final class DiagnosticActivity extends Activity {
         CrashJournal.append(this, "Diagnostic screen onCreate");
         LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(16 * getResources().getDisplayMetrics().density); layout.setPadding(padding,padding,padding,padding);
-        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 3"); title.setTextSize(22); layout.addView(title);
+        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 4"); title.setTextSize(22); layout.addView(title);
         TextView hint = new TextView(this);
         hint.setText("Нажми «Запустить игру». Если она вылетит, вернись сюда и скопируй отчёт. Мод пока выключен.");
         layout.addView(hint);

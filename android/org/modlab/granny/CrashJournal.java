@@ -7,7 +7,21 @@ import java.util.Date;
 /** Crash information is stored locally and copied only at the user's request. */
 public final class CrashJournal {
     static final String FILE = "startup-diagnostic.log";
-    public static void unityStarting(Context context) { append(context,"UnityPlayerActivity.onCreate entered"); }
+    public static void unityStarting(Context context) {
+        append(context,"UnityPlayerActivity.onCreate entered");
+        resourceStatus(context, "game_view_content_description", "string");
+        resourceStatus(context, "unitySurfaceView", "id");
+    }
+    private static String resourceStatus(Context context, String name, String type) {
+        try {
+            android.content.res.Resources resources = context.getResources();
+            int id = resources.getIdentifier(name,type,context.getPackageName());
+            String status = type + "/" + name + " id=0x" + Integer.toHexString(id);
+            if(id != 0) status += " package=" + resources.getResourcePackageName(id);
+            if(id != 0 && "string".equals(type)) status += " value=" + resources.getString(id);
+            append(context,status); return status;
+        } catch (Exception failure) { return name + " lookup failed: " + failure; }
+    }
     public static synchronized void append(Context context, String message) {
         try (FileOutputStream stream = new FileOutputStream(new File(context.getFilesDir(), FILE), true)) {
             stream.write((new Date() + " pid=" + android.os.Process.myPid() + " " + message + "\n").getBytes("UTF-8"));
@@ -43,13 +57,15 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 3\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 4\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
         try { out.append("page size=").append(android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)).append('\n'); }
         catch (Exception ignored) { }
         out.append("Unity runs in :game; native mod defaults OFF; SDK startup providers disabled.\n");
+        out.append("\nRESOURCE LOOKUP\n").append(resourceStatus(context,"game_view_content_description","string"))
+           .append('\n').append(resourceStatus(context,"unitySurfaceView","id")).append('\n');
         out.append("\nSTARTUP JOURNAL\n").append(file(context, FILE));
         out.append("\nMOD JOURNAL\n").append(file(context, "granny-csgo.log"));
         if (android.os.Build.VERSION.SDK_INT >= 30) {
