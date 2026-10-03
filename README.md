@@ -52,12 +52,17 @@ ARM64. Основа: Granny 1.8.12, Unity 6000.0.68f1, IL2CPP metadata 31.
 
 ## GitHub и доставка APK
 
-Этот репозиторий хранит исходники мода. Готовый APK собирается с оригинальной
-игрой и поэтому не публикуется в открытом Release.
-APK больше лимита Git для обычных файлов; для личной доставки нужен приватный
-GitHub-репозиторий с Release или другое хранилище с закрытым доступом.
-Скрипт `scripts/publish_release.py` проверяет, что целевой репозиторий приватный,
-прежде чем загрузить APK.
+Первая тестовая APK доступна в
+[Release iteration-01](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-01).
+На телефоне открыть **Assets → granny-tactical-iteration-01.apk**.
+
+Исходники сохраняются в Git, APK прикрепляется к Release отдельным файлом:
+он больше лимита обычного файла GitHub. Публичная доставка выбрана пользователем.
+Ключ подписи остаётся вне репозитория. Для повторной публикации:
+
+```sh
+python3 scripts/publish_release.py --repo MorgoookRU/granny-csgo --allow-public
+```
 
 ## Локальная сборка
 

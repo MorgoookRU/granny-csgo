@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload the completed APK to an explicitly selected private GitHub repo."""
+"""Upload the completed APK to an explicitly selected GitHub repository."""
 import argparse
 import hashlib
 import json
@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', required=True, help='OWNER/REPO')
+    parser.add_argument('--allow-public', action='store_true',
+                        help='Allow a public release when explicitly requested')
     parser.add_argument('--apk', type=Path, default=Path(
         '/workspace/granny-lab/artifacts/granny-tactical-iteration-01.apk'))
     args = parser.parse_args()
@@ -29,8 +31,8 @@ def main():
     response = subprocess.run([
         'gh', 'repo', 'view', args.repo, '--json', 'isPrivate'
     ], check=True, capture_output=True, text=True)
-    if not json.loads(response.stdout)['isPrivate']:
-        parser.error('Use a private repository for this test APK')
+    if not json.loads(response.stdout)['isPrivate'] and not args.allow_public:
+        parser.error('Public delivery requires --allow-public')
     commit = subprocess.run([
         'git', '-C', str(ROOT), 'rev-parse', 'HEAD'
     ], check=True, capture_output=True, text=True).stdout.strip()
