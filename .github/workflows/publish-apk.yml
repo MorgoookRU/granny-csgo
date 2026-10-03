@@ -1,0 +1,44 @@
+name: Publish prepared APK
+
+on:
+  push:
+    branches: [apk-delivery]
+    paths: [delivery/READY]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconstruct and verify APK
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          metadata = json.loads(Path('delivery/manifest.json').read_text())
+          apk = Path(os.environ['RUNNER_TEMP']) / metadata['filename']
+          digest = hashlib.sha256()
+          with apk.open('wb') as output:
+              for part in metadata['parts']:
+                  data = (Path('delivery/parts') / part['filename']).read_bytes()
+                  if hashlib.sha256(data).hexdigest() != part['sha256']:
+                      raise SystemExit('Part checksum failed: ' + part['filename'])
+                  output.write(data)
+                  digest.update(data)
+          if apk.stat().st_size != metadata['bytes'] or digest.hexdigest() != metadata['sha256']:
+              raise SystemExit('APK checksum or size failed')
+          checksum = Path(str(apk) + '.sha256')
+          checksum.write_text(metadata['sha256'] + '  ' + apk.name + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as env:
+              env.write('APK_PATH=' + str(apk) + '\n')
+          print('Verified:', apk.name, apk.stat().st_size, digest.hexdigest())
+          PY
+      - name: Attach APK to iteration 1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload iteration-01 "$APK_PATH" "$APK_PATH.sha256" --repo "$GITHUB_REPOSITORY" --clobber
