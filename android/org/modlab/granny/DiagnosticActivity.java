@@ -7,7 +7,6 @@ import android.widget.*;
 
 /** Uses framework widgets only; no Unity, native libraries, sounds, or ad SDKs. */
 public final class DiagnosticActivity extends Activity {
-    private static boolean autoAttempted;
     private TextView report;
     private final android.os.Handler handler = new android.os.Handler();
     private int refreshId;
@@ -16,14 +15,18 @@ public final class DiagnosticActivity extends Activity {
         CrashJournal.append(this, "Diagnostic screen onCreate");
         LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(16 * getResources().getDisplayMetrics().density); layout.setPadding(padding,padding,padding,padding);
-        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 6"); title.setTextSize(22); layout.addView(title);
+        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 7 — отчёт"); title.setTextSize(22); layout.addView(title);
         TextView hint = new TextView(this);
-        hint.setText("Игра запускается автоматически с оружием и ботами. После вылета скопируй отчёт и пришли его в чат.");
+        hint.setText("Этот экран не запускает игру сам. При чёрном экране нажми «Остановить игру», затем «Копировать отчёт».");
         layout.addView(hint);
         Button launch = new Button(this); launch.setText("Повторить запуск игры"); layout.addView(launch);
-        launch.setOnClickListener(v -> launch(false));
+        launch.setOnClickListener(v -> launch(false,false));
         Button gl = new Button(this); gl.setText("Запустить через OpenGL"); layout.addView(gl);
-        gl.setOnClickListener(v -> launch(true));
+        gl.setOnClickListener(v -> launch(true,false));
+        Button base = new Button(this); base.setText("Проверить запуск без мода"); layout.addView(base);
+        base.setOnClickListener(v -> launch(false,true));
+        Button stop = new Button(this); stop.setText("Остановить игру"); layout.addView(stop);
+        stop.setOnClickListener(v -> { LaunchState.stopGame(this); refresh(); });
         Button copy = new Button(this); copy.setText("Копировать отчёт"); layout.addView(copy);
         copy.setOnClickListener(v -> {
             ClipboardManager clipboard = (ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
@@ -34,25 +37,16 @@ public final class DiagnosticActivity extends Activity {
         refresh.setOnClickListener(v -> refresh());
         ScrollView scroll = new ScrollView(this); report = new TextView(this); report.setTextSize(12); report.setTextIsSelectable(true);
         scroll.addView(report); layout.addView(scroll,new LinearLayout.LayoutParams(-1,0,1)); setContentView(layout);
-        if(state==null&&!autoAttempted&&!getIntent().getBooleanExtra("diagnostics",false)) {
-            autoAttempted=true; handler.post(() -> launch(false));
-        }
     }
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);setIntent(intent);
-        if(!intent.getBooleanExtra("diagnostics",false)) handler.post(() -> launch(false));
+        refresh();
     }
-    @Override protected void onDestroy() {
-        if(isFinishing()) autoAttempted=false;
-        super.onDestroy();
-    }
-    private void launch(boolean openGL) {
-        autoAttempted=true;
-        CrashJournal.append(this,"Request Unity launch; OpenGL=" + openGL);
+    private void launch(boolean openGL,boolean withoutMod) {
+        LaunchState.stopGame(this);
+        CrashJournal.append(this,"Request Unity launch; OpenGL=" + openGL + "; withoutMod=" + withoutMod);
         try {
-            Intent intent = new Intent(); intent.setClassName(this,"com.unity3d.player.UnityPlayerActivity");
-            if(openGL) intent.putExtra("unity","-force-gles");
-            startActivity(intent);
+            LaunchState.launch(this,openGL,withoutMod);
         } catch (Throwable failure) { CrashJournal.append(this,"Launch failed\n" + CrashJournal.stack(failure)); refresh(); }
     }
     @Override protected void onResume() { super.onResume(); refresh(); }

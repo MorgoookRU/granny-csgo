@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <android/log.h>
 #include <dlfcn.h>
+#include <link.h>
 #include <unistd.h>
 #include <atomic>
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include "shadowhook.h"
 #include "combat.h"
 #include "weapons_generated.h"
+#include "target_layout.h"
 
 using Obj = void *;
 struct Klass; struct Method; struct Field; struct Type;
@@ -41,6 +43,7 @@ static jclass overlay;
 static jmethodID soundCallback;
 static std::mutex logMutex, hudMutex;
 static FILE *logFile;
+static std::string readyFile;
 static std::string bootStatus="Подключение мода…", hud="{}";
 static std::atomic<int> fireInput{0}, reloadInput{0}, buyInput{-1}, selectInput{-1};
 static std::atomic<int> altInput{0}, jumpInput{0}, spawnInput{0}, armorInput{0};
@@ -52,7 +55,7 @@ static float random01(){rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;return (rng&0xffff
 static void log(const std::string &s){
     std::lock_guard<std::mutex> lock(logMutex);
     __android_log_print(ANDROID_LOG_INFO,"GrannyCSGO","%s",s.c_str());
-    if(logFile){auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();fprintf(logFile,"[%lld] %s\n",(long long)ms,s.c_str());fflush(logFile);}
+    if(logFile){auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();fprintf(logFile,"[%lld pid=%d] %s\n",(long long)ms,getpid(),s.c_str());fflush(logFile);}
 }
 TraceScope::TraceScope(const char *stage){++traceDepth;log(std::string("STAGE ")+stage);}
 static void setStatus(const std::string &s){
@@ -572,47 +575,87 @@ static void tick(Obj self){
     if(combat.health<=0){R.call(U.playerDeath,self);fireInput=0;notification="Ты погиб. Начни следующий день.";}
     hudTimer-=dt;if(hudTimer<=0){makeHud(true);hudTimer=.1f;}
 }
-using FixedUpdate=void(*)(Obj,const Method *);static FixedUpdate originalFixed;
+static void unityReady(){
+    static bool recorded=false;if(recorded)return;recorded=true;
+    if(!readyFile.empty()){FILE *file=fopen(readyFile.c_str(),"w");if(file){fprintf(file,"Unity scene callback pid=%d\n",getpid());fclose(file);}}
+    log("Unity managed scene callback reached; automatic startup acknowledged");
+}
+using FixedUpdate=void(*)(Obj,const Method *);static FixedUpdate originalFixed,originalMenu;
+static bool runtimeReady=false,runtimeAttempted=false;
+static void hookedMenu(Obj self,const Method *method){
+    originalMenu(self,method);unityReady();
+    log("Main menu initialized; native mod waits for gameplay FixedUpdate");
+}
 static void hookedFixed(Obj self,const Method *method){
     static bool first=true;if(first){first=false;log("First FPSControllerNEW.FixedUpdate callback");}
     if(inTick){originalFixed(self,method);return;}
     inTick=true;
-    if(self==player&&U.alive(cameraTransform)&&(lastPitch!=0||lastYaw!=0)){V3 undo{lastPitch,-lastYaw,0};R.call(U.rotate,cameraTransform,{&undo});lastPitch=lastYaw=0;}
+    if(runtimeReady&&self==player&&U.alive(cameraTransform)&&(lastPitch!=0||lastYaw!=0)){V3 undo{lastPitch,-lastYaw,0};R.call(U.rotate,cameraTransform,{&undo});lastPitch=lastYaw=0;}
     originalFixed(self,method);
-    tick(self);inTick=false;
+    unityReady();
+    if(!runtimeAttempted){
+        runtimeAttempted=true;TraceScope trace("bind managed API on Unity gameplay thread");
+        runtimeReady=R.init()&&U.bind();
+        if(runtimeReady)log("Managed API bound after original gameplay callback");
+    }
+    if(runtimeReady)tick(self);inTick=false;
+}
+struct LibraryTarget {uintptr_t base=0;bool buildMatches=false,fixedExecutable=false,menuExecutable=false;};
+static int inspectLibrary(dl_phdr_info *info,size_t,void *context){
+    if(!info->dlpi_name)return 0;
+    const char *name=strrchr(info->dlpi_name,'/');name=name?name+1:info->dlpi_name;
+    if(strcmp(name,"libil2cpp.so"))return 0;
+    auto &found=*static_cast<LibraryTarget*>(context);found.base=info->dlpi_addr;
+    for(int i=0;i<info->dlpi_phnum;i++){
+        const auto &header=info->dlpi_phdr[i];
+        if(header.p_type==PT_LOAD&&(header.p_flags&PF_X)){
+            auto inside=[&](uintptr_t rva){return rva>=header.p_vaddr&&rva+16<=header.p_vaddr+header.p_memsz;};
+            found.fixedExecutable|=inside(target::fixedUpdate);found.menuExecutable|=inside(target::menuStart);
+        }
+        if(header.p_type!=PT_NOTE||header.p_memsz>1024*1024)continue;
+        const uint8_t *notes=(const uint8_t*)(info->dlpi_addr+header.p_vaddr);size_t offset=0;
+        while(offset+sizeof(ElfW(Nhdr))<=header.p_memsz){
+            ElfW(Nhdr) note;memcpy(&note,notes+offset,sizeof(note));offset+=sizeof(note);
+            size_t names=(size_t(note.n_namesz)+3)&~size_t(3),desc=(size_t(note.n_descsz)+3)&~size_t(3);
+            if(names>header.p_memsz-offset||desc>header.p_memsz-offset-names)break;
+            if(note.n_type==NT_GNU_BUILD_ID&&note.n_namesz==4&&!memcmp(notes+offset,"GNU",4)&&note.n_descsz==sizeof(target::buildId))
+                found.buildMatches=!memcmp(notes+offset+names,target::buildId,sizeof(target::buildId));
+            offset+=names+desc;
+        }
+    }
+    return 1;
 }
 static void boot(){
+    log("BOOT waiting for IL2CPP ELF; managed APIs are not called here");
     for(int i=0;i<240;i++){
         R.handle=dlopen("libil2cpp.so",RTLD_NOW|RTLD_NOLOAD);
         if(R.handle)break;usleep(250000);
     }
     if(!R.handle){setStatus("Игра не загрузила Unity за 60 секунд");return;}
-    if(!R.init())return;
-    bool ready=false;
-    for(int i=0;i<240;i++){size_t n=0;R.domain_get_assemblies(R.domain_get(),&n);if(n){ready=true;break;}usleep(250000);}
-    if(!ready){setStatus("Unity ещё не готова");return;}
-    void *attached=R.thread_attach(R.domain_get());
-    struct Detach {void *thread;~Detach(){if(thread)R.thread_detach(thread);}} detach{attached};
-    if(!attached){setStatus("Не удалось подключиться к Unity VM");return;}
-    if(!U.bind())return;
-    auto method=R.method(U.fps,"FixedUpdate",{});
-    if(!method){setStatus("Не найден контроллер Granny 1.8.12");return;}
-    void *address=*reinterpret_cast<void *const *>(method);
+    TraceScope trace("install verified gameplay hooks without managed VM access");
+    LibraryTarget library;dl_iterate_phdr(inspectLibrary,&library);
+    if(!library.base||!library.buildMatches||!library.fixedExecutable||!library.menuExecutable){setStatus("Мод не подключён: версия IL2CPP отличается от Granny 1.8.12");return;}
+    void *address=(void*)(library.base+target::fixedUpdate),*menuAddress=(void*)(library.base+target::menuStart);
+    if(memcmp(address,target::fixedBytes,sizeof(target::fixedBytes))||memcmp(menuAddress,target::menuBytes,sizeof(target::menuBytes))){setStatus("Мод не подключён: код контроллера отличается от проверенного");return;}
+    log("BOOT original ELF build ID and both method entry points verified");
     int hookInit=shadowhook_init(SHADOWHOOK_MODE_UNIQUE,false);
     if(hookInit!=0){setStatus(std::string("Ошибка подключения: ")+shadowhook_to_errmsg(hookInit));return;}
     if(!address||!shadowhook_hook_func_addr(address,(void *)hookedFixed,(void **)&originalFixed)){
         setStatus(std::string("Не удалось подключить игровой цикл: ")+shadowhook_to_errmsg(shadowhook_get_errno()));return;
     }
-    setStatus("Готово. Начни игру в Granny.");
+    if(!shadowhook_hook_func_addr(menuAddress,(void*)hookedMenu,(void**)&originalMenu))log("Menu startup acknowledgement hook unavailable");
+    setStatus("Подключение установлено. Оружие и боты включатся при начале игры.");
 }
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm,void *){jvm=vm;return JNI_VERSION_1_6;}
-extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(JNIEnv *env,jclass cls,jstring path,jint mode){
+extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(JNIEnv *env,jclass cls,jstring path,jint mode,jstring token){
     if(started.exchange(true))return;
-    const char *p=env->GetStringUTFChars(path,nullptr);std::string filename=std::string(p)+"/granny-csgo.log";env->ReleaseStringUTFChars(path,p);
+    const char *p=env->GetStringUTFChars(path,nullptr);std::string directory=p;env->ReleaseStringUTFChars(path,p);
+    std::string filename=directory+"/granny-csgo.log";
+    if(token){const char *value=env->GetStringUTFChars(token,nullptr);std::string id=value;env->ReleaseStringUTFChars(token,value);if(id.size()==36&&id.find_first_not_of("0123456789abcdef-")==std::string::npos)readyFile=directory+"/unity-ready-"+id;}
     logFile=fopen(filename.c_str(),"a");overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
     botsEnabled=mode>=2;
-    log("Granny Tactical Lab iteration 6 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
+    log("Granny Tactical Lab iteration 7 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
     std::thread(boot).detach();
 }
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeAction(JNIEnv *,jclass,jint action,jint value){

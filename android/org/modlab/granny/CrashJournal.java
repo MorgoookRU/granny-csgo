@@ -62,13 +62,13 @@ public final class CrashJournal {
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 6\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 7\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
         try { out.append("page size=").append(android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)).append('\n'); }
         catch (Exception ignored) { }
-        out.append("Unity runs in :game; native mod AUTO weapons+bots; controls use Unity UI; SDK startup providers disabled.\n");
+        out.append("Unity runs in :game; default AUTO weapons+bots after gameplay callback; controls use Unity UI; SDK startup providers disabled.\n");
         out.append("\nRESOURCE LOOKUP\n").append(resourceStatus(context,"game_view_content_description","string"))
            .append('\n').append(resourceStatus(context,"unitySurfaceView","id")).append('\n');
         out.append("\nSTARTUP JOURNAL\n").append(file(context, FILE));
@@ -82,7 +82,10 @@ public final class CrashJournal {
                        .append(" reason=").append(exit.getReason()).append(" status=").append(exit.getStatus())
                        .append(" description=").append(exit.getDescription()).append('\n');
                     try {
-                        out.append(exit.getReason()==android.app.ApplicationExitInfo.REASON_CRASH_NATIVE
+                        boolean nativeExit=exit.getReason()==android.app.ApplicationExitInfo.REASON_CRASH_NATIVE
+                            ||(exit.getReason()==android.app.ApplicationExitInfo.REASON_SIGNALED&&(exit.getStatus()==11||exit.getStatus()==6));
+                        if(exit.getReason()==android.app.ApplicationExitInfo.REASON_SIGNALED&&exit.getStatus()==11)out.append("SIGSEGV before/without Android native tombstone capture\n");
+                        out.append(nativeExit
                             ? NativeTombstone.read(exit.getTraceInputStream()) : read(exit.getTraceInputStream(),50000));
                     }
                     catch (Exception failure) { out.append("Trace unavailable: ").append(failure).append('\n'); }

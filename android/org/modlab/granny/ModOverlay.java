@@ -8,13 +8,17 @@ import android.os.Bundle;
 
 /** Nonvisual Android bridge. All gameplay controls are created in Unity. */
 public final class ModOverlay {
-    private static native void nativeStart(String directory,int mode);
+    private static native void nativeStart(String directory,int mode,String token);
     private static native void nativeAction(int action,int value);
     private static boolean nativeLoaded,lifecycleInstalled;
     private static SoundPool sounds;
     private static final int[] soundIds=new int[8];
     public static void attach(final Activity activity) {
-        CrashJournal.append(activity,"Iteration 6 Java bridge attached; no Android gameplay views");
+        CrashJournal.append(activity,"Iteration 7 Java bridge attached; no Android gameplay views");
+        if(activity.getIntent().getBooleanExtra("without_mod",false)) {
+            CrashJournal.append(activity,"Explicit diagnostic launch without native module");
+            return;
+        }
         try {
             if(sounds==null) {
                 sounds=new SoundPool.Builder().setMaxStreams(10).setAudioAttributes(new AudioAttributes.Builder()
@@ -40,7 +44,7 @@ public final class ModOverlay {
             if(!nativeLoaded) {
                 CrashJournal.append(activity,"Automatic native startup; weapons and bots");
                 System.loadLibrary("granny_csgo");nativeLoaded=true;
-                nativeStart(activity.getFilesDir().getAbsolutePath(),2);
+                nativeStart(activity.getFilesDir().getAbsolutePath(),2,activity.getIntent().getStringExtra("launch_token"));
                 CrashJournal.append(activity,"Native module loaded and bootstrap requested");
             }
             nativeAction(8,0);

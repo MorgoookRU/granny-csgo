@@ -2,7 +2,7 @@
 """Build a private standalone test APK from local original game files.
 
 All extracted game code/assets and build products stay in the supplied lab.
-Only the Unity Activity's onCreate receives a call to our Android overlay.
+The Unity Activity's onCreate receives a call to our nonvisual Android bridge.
 """
 import argparse
 import os
@@ -23,6 +23,7 @@ def run(args):
 
 def build(lab: Path, iteration: int):
     tools=lab/'tools';build=lab/'build';generated=build/'generated'
+    if iteration>=7:run(['python3',ROOT/'checks/target_layout_check.py','--lab',lab])
     changes,total=patch_unity_resources(lab/'decoded-base')
     print('Unity resource lookup patches:',changes,'total:',total,flush=True)
     activity=lab/'decoded-base/smali_classes4/com/unity3d/player/UnityPlayerActivity.smali'
@@ -64,7 +65,7 @@ def build(lab: Path, iteration: int):
             if name=='stamp-cert-sha256' or (name.startswith('META-INF/') and (name.endswith(('.SF','.RSA','.DSA','.EC')) or name=='META-INF/MANIFEST.MF')):continue
             data=game.read(entry)
             if name=='AndroidManifest.xml':data,changes=patch(data,label=f'Granny Tactical Lab · {iteration}',version_code=91+iteration);print('Manifest changes:',changes,flush=True)
-            if name=='AndroidManifest.xml' and iteration >= 3:data=diagnostic_launcher(data)
+            if name=='AndroidManifest.xml' and iteration >= 3:data=diagnostic_launcher(data,automatic_launcher=iteration>=7)
             output.writestr(entry,data)
         for entry in native.infolist():
             if entry.filename.startswith('lib/') and entry.filename.endswith('.so'):output.writestr(entry,native.read(entry))

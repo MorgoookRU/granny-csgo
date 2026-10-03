@@ -99,7 +99,7 @@ def patch(data, package='com.modlab.grannycsgo', label='Granny Tactical Lab · 1
     struct.pack_into('<I',result,4,len(result))
     return bytes(result),changes
 
-def diagnostic_launcher(data):
+def diagnostic_launcher(data, automatic_launcher=False):
     """Keep resource IDs intact while separating the launcher from Unity startup."""
     chunks=[]; offset=U16(data,2)
     while offset<len(data):
@@ -108,7 +108,7 @@ def diagnostic_launcher(data):
     pool=StringPool(chunks[pool_index]); namespace=pool.index(ANDROID)
     map_index=next(i for i,c in enumerate(chunks) if U16(c,0)==0x180)
     resource_ids=list(struct.unpack_from('<'+'I'*((len(chunks[map_index])-8)//4),chunks[map_index],8))
-    ids={'name':0x01010003,'enabled':0x0101000e,'exported':0x01010010,'process':0x01010011,'launchMode':0x0101001d}
+    ids={'label':0x01010001,'name':0x01010003,'enabled':0x0101000e,'exported':0x01010010,'process':0x01010011,'taskAffinity':0x01010012,'launchMode':0x0101001d}
     def attr(name,value):
         index=pool.index(name)
         while len(resource_ids)<=index:resource_ids.append(0)
@@ -158,7 +158,13 @@ def diagnostic_launcher(data):
             if unity and tag=='intent-filter':skip_depth=1;continue
         if kind==0x103 and tag=='activity':unity=False
         if kind==0x103 and tag=='application':
-            output.extend([start('activity',[('name','org.modlab.granny.DiagnosticActivity'),('exported',True),('launchMode',2)]),
+            report_attributes=[('name','org.modlab.granny.DiagnosticActivity'),('exported',True),('launchMode',2)]
+            if automatic_launcher:
+                report_attributes += [('label','Granny — отчёт'),('taskAffinity','com.modlab.grannycsgo.reports')]
+                output.extend([start('activity',[('name','org.modlab.granny.LauncherActivity'),('exported',True)]),
+                    start('intent-filter'),start('action',[('name','android.intent.action.MAIN')]),end('action'),
+                    start('category',[('name','android.intent.category.LAUNCHER')]),end('category'),end('intent-filter'),end('activity')])
+            output.extend([start('activity',report_attributes),
                 start('intent-filter'),start('action',[('name','android.intent.action.MAIN')]),end('action'),
                 start('category',[('name','android.intent.category.LAUNCHER')]),end('category'),end('intent-filter'),end('activity')])
         output.append(chunk)
