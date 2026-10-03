@@ -265,3 +265,9 @@
   прошли: crash thread, unsigned address, gzip, unknown fields, truncation и
   invalid tag. Native и Java сборка проходили; работа UI на телефоне не проверена.
 - Фон Granny с AK и дальнейшая полировка остаются следующими шагами.
+
+- Итерация 6 опубликована: Actions 37140486415 завершился успешно.
+  Asset 608222253, 210481254 байт, SHA-256
+  7beae83aeaeb4a90f4986fb60595b4a970ef91ad806bb8ec339408c651738d29.
+  Сборка, подпись v2/v3, zipalign и ресурсы проверены локально;
+  SHA-256 опубликованного asset совпадает. Проверка на Samsung ожидается.
