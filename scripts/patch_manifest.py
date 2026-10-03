@@ -63,7 +63,7 @@ class StringPool:
         return (struct.pack('<HHI5I',1,28,size,len(offsets),self.styles,self.flags & ~1,start,style_start)
                 + struct.pack('<'+'I'*len(offsets),*offsets)+self.style_offsets+data+self.style_data)
 
-def patch(data, package='com.modlab.grannycsgo', label='Granny Tactical Lab · 1'):
+def patch(data, package='com.modlab.grannycsgo', label='Granny Tactical Lab · 1', version_code=None):
     if U16(data,0)!=3 or U32(data,4)!=len(data):raise ValueError('Invalid binary XML')
     chunks=[]; offset=U16(data,2); pool=None; pool_index=None
     while offset<len(data):
@@ -86,6 +86,8 @@ def patch(data, package='com.modlab.grannycsgo', label='Granny Tactical Lab · 1
         def string_attr(name,index):
             p=attributes[name];struct.pack_into('<I',b,p+8,index);b[p+15]=3;struct.pack_into('<I',b,p+16,index);changes.append(tag+'.'+name)
         if tag=='manifest' and 'requiredSplitTypes' in attributes:string_attr('requiredSplitTypes',empty)
+        if tag=='manifest' and version_code is not None and 'versionCode' in attributes:
+            p=attributes['versionCode'];struct.pack_into('<I',b,p+8,0xffffffff);b[p+15]=0x10;struct.pack_into('<I',b,p+16,version_code);changes.append('manifest.versionCode')
         if tag=='application' and 'label' in attributes:string_attr('label',label_index)
         if tag=='meta-data' and 'name' in attributes:
             p=attributes['name'];name=pool.values[U32(b,p+16)]

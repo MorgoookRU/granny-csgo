@@ -29,10 +29,12 @@ import java.io.FileInputStream;
 
 /** Offline controls for the private Granny Tactical Lab test build. */
 public final class ModOverlay {
-    private static native void nativeStart(String directory);
+    private static native void nativeStart(String directory, int mode);
     private static native void nativeAction(int action, int value);
     private static native String nativeHud();
     private static ModOverlay instance;
+    private static volatile boolean nativeLoaded;
+    private TextView shopButton;
     private static SoundPool sounds;
     private static final int[] soundIds = new int[8];
     private final Activity activity;
@@ -48,7 +50,7 @@ public final class ModOverlay {
     private boolean game, shop;
     private final Runnable refresh = new Runnable() {
         @Override public void run() {
-            if (root.getWindowToken() == null) { nativeAction(0, 0); return; }
+            if (root.getWindowToken() == null) { action(0, 0); return; }
             update(); handler.postDelayed(this, 100);
         }
     };
@@ -58,8 +60,6 @@ public final class ModOverlay {
             @Override public void run() {
                 if (instance != null && instance.activity == activity) return;
                 try {
-                    System.loadLibrary("granny_csgo");
-                    nativeStart(activity.getFilesDir().getAbsolutePath());
                     instance = new ModOverlay(activity);
                 } catch (Throwable failure) {
                     new AlertDialog.Builder(activity).setTitle("Granny Tactical Lab")
@@ -68,6 +68,52 @@ public final class ModOverlay {
                 }
             }
         });
+    }
+    private static void action(int action, int value) {
+        if (nativeLoaded) nativeAction(action, value);
+    }
+    private void writeJavaLog(String text) {
+        try {
+            java.io.FileOutputStream out = new java.io.FileOutputStream(new File(activity.getFilesDir(), "granny-csgo.log"), true);
+            out.write(("[Java] " + text + "\n").getBytes("UTF-8")); out.close();
+        } catch (Exception failure) { android.util.Log.w("GrannyCSGO", "Diagnostic log unavailable", failure); }
+    }
+    private void enableMod() {
+        new AlertDialog.Builder(activity).setTitle("Подключить мод")
+            .setMessage("Сначала проверь обычный запуск меню и Practice. Затем начни с оружия без ботов.")
+            .setPositiveButton("Оружие без ботов", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dialog, int which) { startMod(1); }
+            })
+            .setNeutralButton("Оружие и боты", new android.content.DialogInterface.OnClickListener() {
+                @Override public void onClick(android.content.DialogInterface dialog, int which) { startMod(2); }
+            }).setNegativeButton("Пока выключен", null).show();
+    }
+    private void startMod(int mode) {
+        if (nativeLoaded) return;
+        writeJavaLog("Iteration 2; enabling native mode=" + mode);
+        try {
+            System.loadLibrary("granny_csgo");
+            writeJavaLog("Native library loaded");
+            nativeLoaded = true;
+            nativeStart(activity.getFilesDir().getAbsolutePath(), mode);
+            shopButton.setText("SHOP");
+        } catch (Throwable failure) {
+            nativeLoaded = false;
+            writeJavaLog("Native load failed: " + failure.toString());
+            message.setText("Мод не загрузился. Открой LOG.");
+        }
+    }
+    private String previousExits() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return "";
+        try {
+            android.app.ActivityManager manager = (android.app.ActivityManager) activity.getSystemService(Context.ACTIVITY_SERVICE);
+            StringBuilder out = new StringBuilder("\nПредыдущие завершения приложения:\n");
+            for (android.app.ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(activity.getPackageName(), 0, 3)) {
+                out.append(new java.util.Date(exit.getTimestamp())).append(" · reason=").append(exit.getReason())
+                   .append(" · ").append(exit.getDescription()).append('\n');
+            }
+            return out.toString();
+        } catch (Exception failure) { return "\nExit history unavailable: " + failure.getClass().getSimpleName(); }
     }
     public static void playShot(int kind, float volume) {
         SoundPool p = sounds;
@@ -88,7 +134,7 @@ public final class ModOverlay {
         if ((gravity & Gravity.BOTTOM) == Gravity.BOTTOM) p.bottomMargin = dp(y); else p.topMargin = dp(y);
         root.addView(v, p); v.setClickable(true);
         v.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View view) { nativeAction(action, value); }
+            @Override public void onClick(View view) { action(action, value); }
         });
         return v;
     }
@@ -98,13 +144,13 @@ public final class ModOverlay {
         reticle = new Reticle(activity); reticle.setClickable(false);
         root.addView(reticle, new FrameLayout.LayoutParams(-1, -1));
 
-        TextView shopButton = button("SHOP", 65, 37, Gravity.TOP|Gravity.LEFT, 8, 8, 0, 0);
+        shopButton = button("ВКЛ. МОД", 95, 37, Gravity.TOP|Gravity.LEFT, 8, 8, 0, 0);
         shopButton.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { shop = !shop; panel.setVisibility(shop ? View.VISIBLE : View.GONE); nativeAction(0, 0); }
+            @Override public void onClick(View v) { if (!nativeLoaded) { enableMod(); return; } shop = !shop; panel.setVisibility(shop ? View.VISIBLE : View.GONE); action(0, 0); }
         });
         TextView logButton = button("LOG", 50, 37, Gravity.TOP|Gravity.RIGHT, 8, 8, 0, 0);
         logButton.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showLog(); } });
-        info = text("TACTICAL LAB · ITERATION 1", 12);
+        info = text("TACTICAL LAB · ITERATION 2", 12);
         FrameLayout.LayoutParams p = new FrameLayout.LayoutParams(-2, dp(37), Gravity.TOP|Gravity.CENTER_HORIZONTAL);
         p.topMargin = dp(8); root.addView(info, p);
         message = text("Подключение мода…", 11);
@@ -116,8 +162,8 @@ public final class ModOverlay {
         fire.setOnTouchListener(new View.OnTouchListener() {
             @Override public boolean onTouch(View v, MotionEvent event) {
                 int a=event.getActionMasked();
-                if(a==MotionEvent.ACTION_DOWN){nativeAction(0,1);v.setBackgroundColor(0xe0504a20);return true;}
-                if(a==MotionEvent.ACTION_UP||a==MotionEvent.ACTION_CANCEL){nativeAction(0,0);v.setBackgroundColor(0xcf101820);return true;}
+                if(a==MotionEvent.ACTION_DOWN){action(0,1);v.setBackgroundColor(0xe0504a20);return true;}
+                if(a==MotionEvent.ACTION_UP||a==MotionEvent.ACTION_CANCEL){action(0,0);v.setBackgroundColor(0xcf101820);return true;}
                 return true;
             }
         });gameButtons[0]=fire;
@@ -125,7 +171,7 @@ public final class ModOverlay {
         gameButtons[2]=button("ALT",55,43,Gravity.BOTTOM|Gravity.RIGHT,125,72,4,0);
         gameButtons[3]=button("JUMP",65,43,Gravity.BOTTOM|Gravity.RIGHT,20,102,5,0);
         TextView next=button("⇄",55,43,Gravity.BOTTOM|Gravity.RIGHT,125,124,0,0);
-        next.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){for(int i=1;i<=owned.length;i++){int n=(current+i)%owned.length;if(owned[n]){nativeAction(3,n);break;}}}});gameButtons[4]=next;
+        next.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){for(int i=1;i<=owned.length;i++){int n=(current+i)%owned.length;if(owned[n]){action(3,n);break;}}}});gameButtons[4]=next;
 
         panel = new LinearLayout(activity);panel.setOrientation(LinearLayout.VERTICAL);panel.setBackgroundColor(0xf0101820);
         p=new FrameLayout.LayoutParams(dp(320),-1,Gravity.LEFT|Gravity.TOP);p.leftMargin=dp(8);p.topMargin=dp(80);p.bottomMargin=dp(8);root.addView(panel,p);panel.setVisibility(View.GONE);
@@ -133,32 +179,33 @@ public final class ModOverlay {
         LinearLayout controls=new LinearLayout(activity);
         TextView bots=text("4 БОТА",12),armor=text("БРОНЯ $1000",12);
         controls.addView(bots,new LinearLayout.LayoutParams(0,dp(38),1));controls.addView(armor,new LinearLayout.LayoutParams(0,dp(38),1));panel.addView(controls);
-        bots.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){nativeAction(6,0);}});
-        armor.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){nativeAction(7,0);}});
+        bots.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){action(6,0);}});
+        armor.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){action(7,0);}});
         ScrollView scroll=new ScrollView(activity);LinearLayout list=new LinearLayout(activity);list.setOrientation(LinearLayout.VERTICAL);scroll.addView(list);panel.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
         String group="";
         for(int i=0;i<Weapons.NAMES.length;i++){
             if(!group.equals(Weapons.GROUPS[i])){group=Weapons.GROUPS[i];TextView header=text(group.toUpperCase(),12);header.setTextColor(0xff8ac978);list.addView(header,new LinearLayout.LayoutParams(-1,dp(30)));}
             final int id=i;TextView row=text(Weapons.NAMES[i]+" · $"+Weapons.PRICES[i],13);row.setGravity(Gravity.CENTER_VERTICAL|Gravity.LEFT);entries[i]=row;
             LinearLayout.LayoutParams rowParams=new LinearLayout.LayoutParams(-1,dp(40));rowParams.bottomMargin=dp(2);list.addView(row,rowParams);
-            row.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){if(owned[id]){nativeAction(3,id);}else{nativeAction(2,id);}shop=false;panel.setVisibility(View.GONE);}});
-            row.setOnLongClickListener(new View.OnLongClickListener(){@Override public boolean onLongClick(View v){nativeAction(2,id);return true;}});
+            row.setOnClickListener(new View.OnClickListener(){@Override public void onClick(View v){if(owned[id]){action(3,id);}else{action(2,id);}shop=false;panel.setVisibility(View.GONE);}});
+            row.setOnLongClickListener(new View.OnLongClickListener(){@Override public boolean onLongClick(View v){action(2,id);return true;}});
         }
         activity.addContentView(root,new ViewGroup.LayoutParams(-1,-1));
+        writeJavaLog("Iteration 2 overlay attached; native mod remains disabled until requested");
         sounds=new SoundPool.Builder().setMaxStreams(10).setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).build();
         for(int i=0;i<8;i++){try{soundIds[i]=sounds.load(activity.getAssets().openFd("granny_csgo/shot"+i+".wav"),1);}catch(Exception e){android.util.Log.w("GrannyCSGO","Sound loading",e);}}
         handler.postDelayed(refresh,250);
     }
     private void update(){
         try{
-            JSONObject data=new JSONObject(nativeHud());game=data.optBoolean("game");current=data.optInt("weapon");money=data.optInt("money");
+            JSONObject data=new JSONObject(nativeLoaded ? nativeHud() : "{\"game\":false,\"status\":\"Мод выключен. Проверь меню и Practice, затем нажми ВКЛ. МОД.\"}");game=data.optBoolean("game");current=data.optInt("weapon");money=data.optInt("money");
             if(current<0||current>=Weapons.NAMES.length)current=0;
             String status=data.optString("status","Подключение…");
             if(game){
                 String ammo=data.optBoolean("reload")?"ПЕРЕЗАРЯДКА":data.optInt("ammo")+" / "+data.optInt("reserve");
                 info.setText("HP "+data.optInt("health")+" · ARM "+data.optInt("armor")+" · $"+money+" · "+Weapons.NAMES[current]+" · "+ammo);
                 String feed=data.optString("killfeed");message.setText(feed.isEmpty()?data.optString("message"):feed);
-            }else{info.setText("TACTICAL LAB · ITERATION 1");message.setText(status);}
+            }else{info.setText("TACTICAL LAB · ITERATION 2");message.setText(status);}
             JSONArray inventory=data.optJSONArray("owned");if(inventory!=null)for(int i=0;i<owned.length;i++)owned[i]=inventory.optBoolean(i);
             for(int i=0;i<entries.length;i++){
                 entries[i].setText((i==current?"▶ ":"")+Weapons.NAMES[i]+(owned[i]?" · В ИНВЕНТАРЕ":" · $"+Weapons.PRICES[i]));
@@ -169,19 +216,19 @@ public final class ModOverlay {
         }catch(Exception failure){message.setText("Ошибка HUD: "+failure.getClass().getSimpleName());}
     }
     private void showLog(){
-        nativeAction(0,0);String value;
+        action(0,0);String value;
         try{
             File f=new File(activity.getFilesDir(),"granny-csgo.log");FileInputStream in=new FileInputStream(f);ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buffer=new byte[4096];int n;
             while((n=in.read(buffer))>0&&out.size()<64000)out.write(buffer,0,n);in.close();value=out.toString("UTF-8");
         }catch(Exception e){value="Журнал пока пуст: "+e.getClass().getSimpleName();}
-        final String content="Iteration 1 · "+android.os.Build.MODEL+" · Android "+android.os.Build.VERSION.RELEASE+"\n"+value;
+        final String content="Iteration 2 · "+android.os.Build.MODEL+" · Android "+android.os.Build.VERSION.RELEASE+"\n"+value+previousExits();
         new AlertDialog.Builder(activity).setTitle("Журнал мода").setMessage(content)
             .setPositiveButton("Закрыть",null).setNeutralButton("Копировать",new android.content.DialogInterface.OnClickListener(){@Override public void onClick(android.content.DialogInterface dialog,int which){ClipboardManager clipboard=(ClipboardManager)activity.getSystemService(Context.CLIPBOARD_SERVICE);clipboard.setPrimaryClip(ClipData.newPlainText("Granny mod log",content));}}).show();
     }
     private static final class Root extends FrameLayout {
         Root(Context c){super(c);}
-        @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);nativeAction(8,focused?0:1);}
-        @Override protected void onDetachedFromWindow(){nativeAction(0,0);nativeAction(8,1);super.onDetachedFromWindow();}
+        @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);action(8,focused?0:1);}
+        @Override protected void onDetachedFromWindow(){action(0,0);action(8,1);super.onDetachedFromWindow();}
     }
     private static final class Reticle extends View {
         boolean game,scope;float flash;final Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);

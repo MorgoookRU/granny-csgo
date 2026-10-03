@@ -20,7 +20,7 @@ def run(args):
     print('Running:',Path(str(args[0])).name,flush=True)
     subprocess.run([str(a) for a in args],check=True)
 
-def build(lab: Path):
+def build(lab: Path, iteration: int):
     tools=lab/'tools';build=lab/'build';generated=build/'generated'
     activity=lab/'decoded-base/smali_classes4/com/unity3d/player/UnityPlayerActivity.smali'
     source=activity.read_text()
@@ -52,7 +52,7 @@ def build(lab: Path):
             name=entry.filename
             if name=='stamp-cert-sha256' or (name.startswith('META-INF/') and (name.endswith(('.SF','.RSA','.DSA','.EC')) or name=='META-INF/MANIFEST.MF')):continue
             data=game.read(entry)
-            if name=='AndroidManifest.xml':data,changes=patch(data);print('Manifest changes:',changes,flush=True)
+            if name=='AndroidManifest.xml':data,changes=patch(data,label=f'Granny Tactical Lab · {iteration}',version_code=91+iteration);print('Manifest changes:',changes,flush=True)
             output.writestr(entry,data)
         for entry in native.infolist():
             if entry.filename.startswith('lib/') and entry.filename.endswith('.so'):output.writestr(entry,native.read(entry))
@@ -72,7 +72,7 @@ def build(lab: Path):
                      '-keystore',keystore,'-storepass:file',password,'-keypass:file',password])
         keystore.chmod(0o600)
     artifacts=lab/'artifacts';artifacts.mkdir(exist_ok=True)
-    final=artifacts/'granny-tactical-iteration-01.apk'
+    final=artifacts/f'granny-tactical-iteration-{iteration:02d}.apk'
     run([tools/'android-15/apksigner','sign','--ks',keystore,'--ks-key-alias','granny-lab','--ks-pass','file:'+str(password),
          '--min-sdk-version','24','--v1-signing-enabled','true','--v2-signing-enabled','true','--out',final,aligned])
     run([tools/'android-15/apksigner','verify','--verbose',final])
@@ -80,4 +80,4 @@ def build(lab: Path):
     print('APK:',final,'bytes:',final.stat().st_size,flush=True)
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser();parser.add_argument('--lab',type=Path,default=Path('/workspace/granny-lab'));args=parser.parse_args();build(args.lab)
+    parser=argparse.ArgumentParser();parser.add_argument('--lab',type=Path,default=Path('/workspace/granny-lab'));parser.add_argument('--iteration',type=int,default=1);args=parser.parse_args();build(args.lab,args.iteration)

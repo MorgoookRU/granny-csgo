@@ -245,7 +245,8 @@ static Obj mats[8];
 static std::vector<Obj> worldRoots;
 static V3 waypoints[16];static int waypointCount=0;
 static float now=0,recoilPitch=0,recoilYaw=0,lastPitch=0,lastYaw=0,flash=0,grannyHP=100,grannyReset=0;
-static bool scoped=false,burstMode=false,wasCaught=false,inTick=false;
+static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnabled=false;
+static float sceneRetry=0;
 static int burstLeft=0;static float hudTimer=0;
 static std::string notification="Открой магазин, выбери оружие и начни игру",killfeed;
 struct Bot {Obj root=nullptr,transform=nullptr,agent=nullptr,head=nullptr,legs[2]{};float hp=100,armor=50,nextShot=0,respawn=0,blind=0,lastSeen=-100;V3 target{};int weapon=17;};
@@ -311,6 +312,7 @@ static V3 spawnPosition(int i){
     return U.navPoint(p);
 }
 static void spawnBots(){
+    botsEnabled=true;
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(U.alive(b.root))U.remove(b.root);b={};b.weapon=(int[]){17,18,11,7}[i];
         b.root=U.newGO("CSGO_Bot");worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
@@ -325,6 +327,7 @@ static void spawnBots(){
     notification="Добавлены 4 тестовых бота";
 }
 static void resetWorld(Obj self){
+    sceneRetry=.5f;
     for(auto root:worldRoots)U.remove(root);worldRoots.clear();R.clearRoots();
     player=R.pin(self);playerTransform=R.pin(U.trans(self,true));character=R.pin(R.field<Obj>(self,U.fps,"character"));
     cameraObject=R.pin(R.call(U.cameraMain));cameraTransform=R.pin(U.trans(cameraObject,true));
@@ -336,7 +339,7 @@ static void resetWorld(Obj self){
     if(granny){for(int i=1;i<=16;i++){std::string n="nav"+std::to_string(i);Obj t=R.field<Obj>(granny,U.granny,n.c_str());if(U.alive(t))waypoints[waypointCount++]=U.pos(t);}}
     if(!U.alive(cameraObject)||!makeMaterials()){notification="Ожидание камеры и материалов";return;}
     float fov=75,clip=.04f;R.call(U.setFov,cameraObject,{&fov});R.call(U.setClip,cameraObject,{&clip});
-    weaponModel();spawnBots();setStatus("Мод подключён");log("Scene initialized; waypoints="+std::to_string(waypointCount));
+    weaponModel();if(botsEnabled)spawnBots();setStatus("Мод подключён");log("Scene initialized; waypoints="+std::to_string(waypointCount));
 }
 static bool smokeBetween(V3 a,V3 b){
     V3 delta=b-a;float n=dot(delta,delta);if(n<.01f)return false;
@@ -434,7 +437,7 @@ static void updateBots(){
     V3 target=U.pos(cameraTransform),ground=U.pos(playerTransform);
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(!U.alive(b.root))continue;
-        if(b.hp<=0){if(now>=b.respawn){U.active(b.root,true);U.position(b.transform,spawnPosition(i));b.hp=100;b.armor=50;b.nextShot=now+1;}continue;}
+        if(b.hp<=0){if(now>=b.respawn){U.position(b.transform,spawnPosition(i));U.active(b.root,true);b.hp=100;b.armor=50;b.nextShot=now+1;}continue;}
         V3 p=U.pos(b.transform),eye=p+V3{0,1.5f,0};float dist=length(target-eye);
         bool seen=now>b.blind&&dist<25&&visible(eye,target,playerTransform);
         if(seen){if(now-b.lastSeen>.2f)b.nextShot=std::max(b.nextShot,now+.35f);b.lastSeen=now;b.target=ground;V3 flat=ground;flat.y=p.y;R.call(U.lookAt,b.transform,{&flat});}
@@ -464,12 +467,14 @@ static void makeHud(bool inGame){
 }
 static void tick(Obj self){
     if(paused){fireInput=0;return;}
+    float dt=R.value<float>(R.call(U.fixedDelta));dt=clamp(dt,.001f,.1f);
     if(self!=player||!U.alive(cameraObject))resetWorld(self);
+    else if(!cubeMesh){sceneRetry-=dt;if(sceneRetry<=0)resetWorld(self);}
     if(!cameraTransform||!cubeMesh){makeHud(false);return;}
-    float dt=R.value<float>(R.call(U.fixedDelta));dt=clamp(dt,.001f,.1f);now+=dt;
+    now+=dt;
     bool caught=R.field<bool>(self,U.fps,"playerCaught");
     if(caught){wasCaught=true;fireInput=0;makeHud(false);return;}
-    if(wasCaught){combat.health=100;combat.armor=100;wasCaught=false;spawnBots();}
+    if(wasCaught){combat.health=100;combat.armor=100;wasCaught=false;if(botsEnabled)spawnBots();}
     int id=buyInput.exchange(-1);
     if(id>=0){if(combat_buy(&combat,weapons,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();notification=std::string("Куплено: ")+weapons[id].name;}else notification="Недостаточно денег";}
     id=selectInput.exchange(-1);if(id>=0&&combat_select(&combat,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();}
@@ -529,11 +534,12 @@ static void boot(){
 }
 
 extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM *vm,void *){jvm=vm;return JNI_VERSION_1_6;}
-extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(JNIEnv *env,jclass cls,jstring path){
+extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(JNIEnv *env,jclass cls,jstring path,jint mode){
     if(started.exchange(true))return;
     const char *p=env->GetStringUTFChars(path,nullptr);std::string filename=std::string(p)+"/granny-csgo.log";env->ReleaseStringUTFChars(path,p);
     logFile=fopen(filename.c_str(),"a");overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
-    log("Granny Tactical Lab iteration 1 / Granny 1.8.12 / arm64-v8a");
+    botsEnabled=mode>=2;
+    log("Granny Tactical Lab iteration 2 / Granny 1.8.12 / arm64-v8a / mode="+std::to_string(mode));
     std::thread(boot).detach();
 }
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeAction(JNIEnv *,jclass,jint action,jint value){

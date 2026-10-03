@@ -2,7 +2,7 @@ name: Publish prepared APK
 
 on:
   push:
-    branches: [apk-delivery]
+    branches: [apk-delivery, 'apk-delivery-*']
     paths: [delivery/READY]
   workflow_dispatch:
 
@@ -36,9 +36,10 @@ jobs:
           checksum.write_text(metadata['sha256'] + '  ' + apk.name + '\n')
           with open(os.environ['GITHUB_ENV'], 'a') as env:
               env.write('APK_PATH=' + str(apk) + '\n')
+              env.write('RELEASE_TAG=' + metadata['tag'] + '\n')
           print('Verified:', apk.name, apk.stat().st_size, digest.hexdigest())
           PY
-      - name: Attach APK to iteration 1
+      - name: Attach APK to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload iteration-01 "$APK_PATH" "$APK_PATH.sha256" --repo "$GITHUB_REPOSITORY" --clobber
+        run: gh release upload "$RELEASE_TAG" "$APK_PATH" "$APK_PATH.sha256" --repo "$GITHUB_REPOSITORY" --clobber

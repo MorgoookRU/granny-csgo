@@ -1,10 +1,17 @@
-# Granny Tactical Lab — итерация 1
+# Granny Tactical Lab — итерация 2
 
 Первая тестовая Android-сборка мода Granny с механиками, вдохновлёнными CS:GO.
 Создана с помощью AI. Целевое устройство: Samsung Galaxy S23+, Android 16,
 ARM64. Основа: Granny 1.8.12, Unity 6000.0.68f1, IL2CPP metadata 31.
 
 ## APK
+
+Текущая диагностическая версия: **Granny Tactical Lab · 2**.
+После сообщения о падении первой APK native-мод выключен по умолчанию.
+Сначала проверить меню и Practice; затем через **ВКЛ. МОД** выбрать
+**Оружие без ботов**. LOG включает сведения Android о предыдущем завершении.
+Итерация 2 подписана тем же ключом, versionCode повышен до 93.
+Она устанавливается поверх первой сборки. Запуск на телефоне ещё не проверен.
 
 Файл первой итерации:
 `/workspace/granny-lab/artifacts/granny-tactical-iteration-01.apk`.
@@ -52,17 +59,25 @@ ARM64. Основа: Granny 1.8.12, Unity 6000.0.68f1, IL2CPP metadata 31.
 
 ## GitHub и доставка APK
 
-Первая тестовая APK собрана локально. Загрузка в GitHub пока блокируется
-авторизацией облачной сессии; Release `iteration-01` ещё не создан.
-После загрузки файл будет доступен через **Assets → granny-tactical-iteration-01.apk**.
+Первая APK загружена:
+[скачать granny-tactical-iteration-01.apk](https://github.com/MorgoookRU/granny-csgo/releases/download/iteration-01/granny-tactical-iteration-01.apk).
+В [Release iteration-01](https://github.com/MorgoookRU/granny-csgo/releases/tag/iteration-01)
+также опубликована контрольная сумма SHA-256.
 
 Исходники сохраняются в Git, APK прикрепляется к Release отдельным файлом:
 он больше лимита обычного файла GitHub. Публичная доставка выбрана пользователем.
 Ключ подписи остаётся вне репозитория. Для повторной публикации:
 
 ```sh
-python3 scripts/publish_release.py --repo MorgoookRU/granny-csgo --allow-public
+python3 scripts/publish_release.py --repo MorgoookRU/granny-csgo --allow-public --via-actions
 ```
+
+Прямая загрузка бинарных файлов через HTTP-прокси облака возвращала
+`Bad Content-Length` даже для файла контрольной суммы. Поэтому APK передан
+частями через Git, восстановлен и проверен в GitHub Actions, затем прикреплён
+к Release как один установочный файл. Ключ подписи и авторизация не загружались.
+Для другой итерации указать `--iteration iteration-02`; метаданные и описание
+берутся из `releases/iteration-02.json` и `releases/iteration-02.md`.
 
 ## Локальная сборка
 

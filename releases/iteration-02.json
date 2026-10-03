@@ -1,0 +1,10 @@
+{
+  "tag": "iteration-02",
+  "filename": "granny-tactical-iteration-02.apk",
+  "bytes": 210464870,
+  "sha256": "f6d2b305b56b6dfd6e52d2fbb8bdbfbacd68b3c0b9c25338bf58f62bfa844204",
+  "package": "com.modlab.grannycsgo",
+  "architecture": "arm64-v8a",
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": false
+}
