@@ -51,6 +51,8 @@ def build(lab: Path, iteration: int):
     raw=build/'game-rebuilt.apk'
     run(['java','-jar',tools/'apktool.jar','build','--output',raw,lab/'decoded-base'])
     stripped=build/'stripped';stripped.mkdir(exist_ok=True)
+    symbols=build/'symbols'/f'iteration-{iteration:02d}';symbols.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(build/'native-shadow/libgranny_csgo.so',symbols/'libgranny_csgo.so')
     libraries=[]
     for source in [build/'native-shadow/libgranny_csgo.so',build/'native-shadow/shadowhook/libshadowhook.so',build/'native-shadow/shadowhook/libshadowhook_nothing.so']:
         library=stripped/source.name;shutil.copyfile(source,library);libraries.append(library)

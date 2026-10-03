@@ -108,12 +108,13 @@ def diagnostic_launcher(data):
     pool=StringPool(chunks[pool_index]); namespace=pool.index(ANDROID)
     map_index=next(i for i,c in enumerate(chunks) if U16(c,0)==0x180)
     resource_ids=list(struct.unpack_from('<'+'I'*((len(chunks[map_index])-8)//4),chunks[map_index],8))
-    ids={'name':0x01010003,'enabled':0x0101000e,'exported':0x01010010,'process':0x01010011}
+    ids={'name':0x01010003,'enabled':0x0101000e,'exported':0x01010010,'process':0x01010011,'launchMode':0x0101001d}
     def attr(name,value):
         index=pool.index(name)
         while len(resource_ids)<=index:resource_ids.append(0)
         resource_ids[index]=ids[name]
         if isinstance(value,bool): raw=0xffffffff; kind=0x12; typed=int(value)
+        elif isinstance(value,int): raw=0xffffffff;kind=0x10;typed=value
         else:raw=pool.index(value);kind=3;typed=raw
         return struct.pack('<IIIHBBI',namespace,index,raw,8,0,kind,typed)
     def start(tag,attributes=()):
@@ -157,7 +158,7 @@ def diagnostic_launcher(data):
             if unity and tag=='intent-filter':skip_depth=1;continue
         if kind==0x103 and tag=='activity':unity=False
         if kind==0x103 and tag=='application':
-            output.extend([start('activity',[('name','org.modlab.granny.DiagnosticActivity'),('exported',True)]),
+            output.extend([start('activity',[('name','org.modlab.granny.DiagnosticActivity'),('exported',True),('launchMode',2)]),
                 start('intent-filter'),start('action',[('name','android.intent.action.MAIN')]),end('action'),
                 start('category',[('name','android.intent.category.LAUNCHER')]),end('category'),end('intent-filter'),end('activity')])
         output.append(chunk)

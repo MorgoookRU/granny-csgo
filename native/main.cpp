@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 #include <sstream>
@@ -21,6 +22,7 @@ using Obj = void *;
 struct Klass; struct Method; struct Field; struct Type;
 struct Array { void *klass, *monitor, *bounds; uintptr_t length; char data[0]; };
 struct V3 { float x=0, y=0, z=0; };
+struct V2 { float x=0,y=0; };
 struct Color { float r, g, b, a; };
 struct Hit { V3 point, normal; uint32_t face; float distance; float uv[2]; int collider; };
 struct NavHit { V3 point, normal; float distance; int mask, hit; };
@@ -44,12 +46,15 @@ static std::atomic<int> fireInput{0}, reloadInput{0}, buyInput{-1}, selectInput{
 static std::atomic<int> altInput{0}, jumpInput{0}, spawnInput{0}, armorInput{0};
 static std::atomic<bool> started{false}, paused{false};
 static uint32_t rng=0xC56018;
+static thread_local int traceDepth=0;
+struct TraceScope { explicit TraceScope(const char *stage); ~TraceScope(){--traceDepth;} };
 static float random01(){rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;return (rng&0xffffff)/16777216.f;}
 static void log(const std::string &s){
     std::lock_guard<std::mutex> lock(logMutex);
     __android_log_print(ANDROID_LOG_INFO,"GrannyCSGO","%s",s.c_str());
-    if(logFile){fprintf(logFile,"%s\n",s.c_str());fflush(logFile);}
+    if(logFile){auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();fprintf(logFile,"[%lld] %s\n",(long long)ms,s.c_str());fflush(logFile);}
 }
+TraceScope::TraceScope(const char *stage){++traceDepth;log(std::string("STAGE ")+stage);}
 static void setStatus(const std::string &s){
     {std::lock_guard<std::mutex> lock(hudMutex);bootStatus=s;}
     log(s);
@@ -67,6 +72,13 @@ struct Runtime {
     const void *(*assembly_get_image)(const void *);
     Klass *(*class_from_name)(const void *,const char *,const char *);
     Klass *(*class_get_parent)(Klass *);
+    Klass *(*object_get_class)(Obj);
+    bool (*class_is_valuetype)(Klass *);
+    bool (*class_is_assignable_from)(Klass *,Klass *);
+    int32_t (*class_value_size)(Klass *,uint32_t *);
+    Klass *(*method_get_class)(const Method *);
+    uint32_t (*method_get_flags)(const Method *,uint32_t *);
+    void (*format_exception)(Obj,char *,int);
     const Method *(*class_get_methods)(Klass *,void **);
     const char *(*method_get_name)(const Method *);
     uint32_t (*method_get_param_count)(const Method *);
@@ -83,12 +95,16 @@ struct Runtime {
     Array *(*array_new)(Klass *,uintptr_t);
     Obj (*string_new)(const char *);
     void *(*thread_attach)(void *);
+    void (*thread_detach)(void *);
+    void (*gc_write)(Obj,void **,Obj);
     uint32_t (*gchandle_new)(Obj,bool);
     void (*gchandle_free)(uint32_t);
     void (*free_mem)(void *);
     std::unordered_map<std::string,Klass *> classes;
     std::unordered_map<std::string,const Method *> methods;
     std::vector<uint32_t> roots;
+    Klass *unityObject=nullptr;
+    const Method *nativeAlive=nullptr;
     int errors=0;
 
     bool init(){
@@ -98,6 +114,13 @@ struct Runtime {
         BIND(assembly_get_image,"il2cpp_assembly_get_image")
         BIND(class_from_name,"il2cpp_class_from_name")
         BIND(class_get_parent,"il2cpp_class_get_parent")
+        BIND(object_get_class,"il2cpp_object_get_class")
+        BIND(class_is_valuetype,"il2cpp_class_is_valuetype")
+        BIND(class_is_assignable_from,"il2cpp_class_is_assignable_from")
+        BIND(class_value_size,"il2cpp_class_value_size")
+        BIND(method_get_class,"il2cpp_method_get_class")
+        BIND(method_get_flags,"il2cpp_method_get_flags")
+        BIND(format_exception,"il2cpp_format_exception")
         BIND(class_get_methods,"il2cpp_class_get_methods")
         BIND(method_get_name,"il2cpp_method_get_name")
         BIND(method_get_param_count,"il2cpp_method_get_param_count")
@@ -114,6 +137,8 @@ struct Runtime {
         BIND(array_new,"il2cpp_array_new")
         BIND(string_new,"il2cpp_string_new")
         BIND(thread_attach,"il2cpp_thread_attach")
+        BIND(thread_detach,"il2cpp_thread_detach")
+        BIND(gc_write,"il2cpp_gc_wbarrier_set_field")
         BIND(gchandle_new,"il2cpp_gchandle_new")
         BIND(gchandle_free,"il2cpp_gchandle_free")
         BIND(free_mem,"il2cpp_free")
@@ -148,12 +173,28 @@ struct Runtime {
     }
     Obj call(const Method *m,Obj self=nullptr,std::initializer_list<void *> args={}){
         if(!m)return nullptr;
+        uint32_t impl=0;bool instance=(method_get_flags(m,&impl)&0x10)==0;
+        if(instance&&(!self||!class_is_assignable_from(method_get_class(m),object_get_class(self)))){
+            if(errors++<30)log(std::string("Skipped invalid receiver: ")+method_get_name(m));return nullptr;
+        }
+        if(instance&&nativeAlive&&unityObject&&strcmp(method_get_name(m),".ctor")&&class_is_assignable_from(unityObject,object_get_class(self))){
+            if(!value<bool>(call(nativeAlive,nullptr,{self}))){
+                if(errors++<30)log(std::string("Skipped destroyed Unity object: ")+method_get_name(m));return nullptr;
+            }
+        }
+        if(traceDepth)log(std::string("CALL ")+method_get_name(m));
         std::vector<void *> params(args);
         Obj exception=nullptr;Obj result=runtime_invoke(m,self,params.empty()?nullptr:params.data(),&exception);
-        if(exception){if(errors++<12)log(std::string("Unity exception in ")+method_get_name(m));return nullptr;}
+        if(exception){if(errors++<30){char message[2048]{};format_exception(exception,message,sizeof(message));log(std::string("Unity exception in ")+method_get_name(m)+": "+message);}return nullptr;}
         return result;
     }
-    template<class T>T value(Obj o){T v{};if(o)memcpy(&v,object_unbox(o),sizeof(v));return v;}
+    template<class T>T value(Obj o){
+        T v{};if(!o)return v;Klass *c=object_get_class(o);uint32_t alignment=0;
+        if(!c||!class_is_valuetype(c)||class_value_size(c,&alignment)!=(int)sizeof(v)){
+            if(errors++<30)log("Skipped unexpected boxed value layout");return v;
+        }
+        void *raw=object_unbox(o);if(raw)memcpy(&v,raw,sizeof(v));return v;
+    }
     template<class T>T field(Obj o,Klass *c,const char *name){T v{};auto f=class_get_field_from_name(c,name);if(o&&f)field_get_value(o,f,&v);return v;}
     template<class T>void set(Obj o,Klass *c,const char *name,T v){auto f=class_get_field_from_name(c,name);if(o&&f)field_set_value(o,f,&v);}
     Obj type(Klass *c){return c?type_get_object(class_get_type(c)):nullptr;}
@@ -168,7 +209,7 @@ struct Unity {
     const Method *addComponent,*getComponent,*setActive,*setLayer,*getPosition,*setPosition,*getForward,*getRight;
     const Method *getParent,*setParent,*setLocalPosition,*setLocalScale,*setEuler,*rotate,*lookAt;
     const Method *meshCtor,*setVertices,*setNormals,*setTriangles,*setMesh,*getMaterial,*setMaterial,*matCtor,*matColor,*matTexture;
-    const Method *cameraMain,*setFov,*setClip,*fixedDelta,*raycast,*hitTransform,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
+    const Method *cameraMain,*setFov,*setClip,*fixedDelta,*raycast,*hitTransform,*findById,*sampleNav,*setDestination,*onNav,*agentSpeed,*agentStop;
     const Method *capsuleHeight,*capsuleRadius,*capsuleCenter,*getVelocity,*playerDeath;
     bool bind(){
 #define CLASS(member,ns,name) member=R.klass(ns,name);if(!member){setStatus("Нет класса " name);return false;}
@@ -203,12 +244,14 @@ struct Unity {
         M(cameraMain,camera,"get_main");M(setFov,camera,"set_fieldOfView","System.Single");M(setClip,camera,"set_nearClipPlane","System.Single");M(fixedDelta,time,"get_fixedDeltaTime");
         M(raycast,physics,"Raycast","UnityEngine.Vector3","UnityEngine.Vector3","UnityEngine.RaycastHit&","System.Single","System.Int32","UnityEngine.QueryTriggerInteraction");
         M(hitTransform,hit,"get_transform");M(sampleNav,nav,"SamplePosition","UnityEngine.Vector3","UnityEngine.AI.NavMeshHit&","System.Single","System.Int32");
+        M(findById,object,"FindObjectFromInstanceID","System.Int32");
         M(setDestination,agent,"SetDestination","UnityEngine.Vector3");M(onNav,agent,"get_isOnNavMesh");M(agentSpeed,agent,"set_speed","System.Single");M(agentStop,agent,"set_stoppingDistance","System.Single");
         M(capsuleHeight,capsule,"set_height","System.Single");M(capsuleRadius,capsule,"set_radius","System.Single");M(capsuleCenter,capsule,"set_center","UnityEngine.Vector3");
         M(getVelocity,R.klass("UnityEngine","CharacterController"),"get_velocity");M(playerDeath,fps,"PlayerGetsCaught");
 #undef M
         const Method *required[]={objectAlive,destroy,findObjects,goCtor,getTransform,componentTransform,componentGO,addComponent,setActive,getPosition,setPosition,getForward,getRight,setParent,setLocalPosition,setLocalScale,setEuler,meshCtor,setVertices,setNormals,setTriangles,setMesh,getMaterial,setMaterial,matCtor,matColor,cameraMain,raycast,hitTransform};
         for(auto m:required)if(!m){setStatus("Ошибка подключения Unity. Открой журнал мода.");return false;}
+        R.unityObject=object;R.nativeAlive=objectAlive;
         return true;
     }
     bool alive(Obj o){return o&&R.value<bool>(R.call(objectAlive,nullptr,{o}));}
@@ -232,8 +275,8 @@ struct Unity {
         return R.value<bool>(R.call(raycast,nullptr,{&start,&dir,&h,&distance,&mask,&ignore}));
     }
     Obj hitTrans(Hit &h){
-        using Getter=Obj(*)(Hit *,const Method *);
-        return reinterpret_cast<Getter>(*reinterpret_cast<void *const *>(hitTransform))(&h,hitTransform);
+        if(!h.collider||!findById)return nullptr;
+        Obj collider=R.call(findById,nullptr,{&h.collider});return collider?trans(collider,true):nullptr;
     }
     V3 navPoint(V3 p){NavHit h{};float range=3;int mask=-1;if(R.value<bool>(R.call(sampleNav,nullptr,{&p,&h,&range,&mask})))return h.point;return p;}
     bool childOf(Obj t,Obj root){for(int i=0;t&&i<16;i++){if(t==root)return true;t=R.call(getParent,t);}return false;}
@@ -246,6 +289,9 @@ static std::vector<Obj> worldRoots;
 static V3 waypoints[16];static int waypointCount=0;
 static float now=0,recoilPitch=0,recoilYaw=0,lastPitch=0,lastYaw=0,flash=0,grannyHP=100,grannyReset=0;
 static bool scoped=false,burstMode=false,wasCaught=false,inTick=false,botsEnabled=false;
+static void resetNativeUI();
+static void updateNativeUI(bool inGame);
+static void inputNativeUI();
 static float sceneRetry=0;
 static int burstLeft=0;static float hudTimer=0;
 static std::string notification="Открой магазин, выбери оружие и начни игру",killfeed;
@@ -263,6 +309,7 @@ static void sound(int kind,float volume=1.f){
     if(detach)jvm->DetachCurrentThread();
 }
 static Obj makeMesh(){
+    TraceScope trace("mesh allocation");
     static const V3 v[]={
       {-0.5f,-0.5f,0.5f},{0.5f,-0.5f,0.5f},{0.5f,0.5f,0.5f},{-0.5f,0.5f,0.5f},
       {0.5f,-0.5f,-0.5f},{-0.5f,-0.5f,-0.5f},{-0.5f,0.5f,-0.5f},{0.5f,0.5f,-0.5f},
@@ -273,12 +320,14 @@ static Obj makeMesh(){
     const V3 faceNormals[]={{0,0,1},{0,0,-1},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0}};
     V3 normals[24];int triangles[36];
     for(int f=0;f<6;f++){for(int j=0;j<4;j++)normals[f*4+j]=faceNormals[f];int a=f*4;int t[]={a,a+1,a+2,a,a+2,a+3};memcpy(triangles+f*6,t,sizeof(t));}
-    auto vertices=R.array_new(U.vec,24), ns=R.array_new(U.vec,24), ts=R.array_new(U.integer,36);
+    auto vertices=(Array*)R.pin(R.array_new(U.vec,24)),ns=(Array*)R.pin(R.array_new(U.vec,24)),ts=(Array*)R.pin(R.array_new(U.integer,36));
+    if(!vertices||!ns||!ts){setStatus("Не удалось выделить данные модели");return nullptr;}
     memcpy(vertices->data,v,sizeof(v));memcpy(ns->data,normals,sizeof(normals));memcpy(ts->data,triangles,sizeof(triangles));
     Obj mesh=R.pin(R.object_new(U.mesh));R.call(U.meshCtor,mesh);
     R.call(U.setVertices,mesh,{vertices});R.call(U.setNormals,mesh,{ns});R.call(U.setTriangles,mesh,{ts});return mesh;
 }
 static bool makeMaterials(){
+    TraceScope trace("scene materials");
     auto renderers=U.objects(U.renderer);Obj source=nullptr;
     if(renderers&&renderers->length<10000){auto objects=(Obj *)renderers->data;for(size_t i=0;i<renderers->length;i++){source=R.call(U.getMaterial,objects[i]);if(U.alive(source))break;}}
     if(!source){notification="Не найден материал сцены";return false;}
@@ -293,8 +342,16 @@ static Obj box(Obj parent,const char *name,V3 position,V3 size,int material,int 
     R.call(U.setMesh,filter,{cubeMesh});R.call(U.setMaterial,renderer,{mats[material]});return root;
 }
 static void weaponModel(){
-    if(gun)U.remove(gun);
+    TraceScope trace("weapon model replacement");
+    if(!cubeMesh||!U.alive(cameraTransform)){log("Weapon model deferred: scene is not ready");return;}
+    Obj previous=gun;
+    Obj previousTransform=gunTransform;
     gun=U.newGO("CSGO_Weapon");worldRoots.push_back(gun);gunTransform=R.pin(U.trans(gun));U.parent(gunTransform,cameraTransform);
+    if(!U.alive(gun)||!U.alive(gunTransform)){gun=previous;gunTransform=previousTransform;notification="Не удалось создать оружие";return;}
+    struct Replace {
+        Obj old;
+        ~Replace(){if(old){U.remove(old);worldRoots.erase(std::remove(worldRoots.begin(),worldRoots.end(),old),worldRoots.end());}}
+    } replacement{previous};
     U.local(gunTransform,{.24f,-.2f,.46f});
     const Weapon &w=weapons[combat.weapon];float body=w.kind==0?.2f:(w.kind==3?.47f:.34f);
     if(w.kind>=8){box(gunTransform,"Grenade",{0,-.015f,.05f},{.07f,.12f,.07f},w.kind==11?1:4,2);box(gunTransform,"Pin",{0,.055f,.05f},{.03f,.02f,.035f},2,2);return;}
@@ -312,10 +369,11 @@ static V3 spawnPosition(int i){
     return U.navPoint(p);
 }
 static void spawnBots(){
+    TraceScope trace("spawn four bots");
     botsEnabled=true;
     for(int i=0;i<4;i++){
         Bot &b=bots[i];if(U.alive(b.root))U.remove(b.root);b={};b.weapon=(int[]){17,18,11,7}[i];
-        b.root=U.newGO("CSGO_Bot");worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
+        b.root=U.newGO("CSGO_Bot");U.active(b.root,false);worldRoots.push_back(b.root);b.transform=R.pin(U.trans(b.root));U.position(b.transform,spawnPosition(i));
         box(b.transform,"Torso",{0,1.05f,0},{.46f,.6f,.28f},i%2?4:3);
         b.head=R.pin(U.trans(box(b.transform,"Helmet",{0,1.58f,0},{.31f,.31f,.3f},0)));
         for(int j=0;j<2;j++){b.legs[j]=R.pin(U.trans(box(b.transform,"Leg",{j?.14f:-.14f,.43f,0},{.16f,.78f,.19f},0)));box(b.transform,"Arm",{j?.31f:-.31f,1.09f,.14f},{.14f,.45f,.17f},i%2?4:3);}
@@ -323,23 +381,31 @@ static void spawnBots(){
         Obj collider=U.add(b.root,U.capsule);float height=1.85f,radius=.32f;V3 center{0,.925f,0};R.call(U.capsuleHeight,collider,{&height});R.call(U.capsuleRadius,collider,{&radius});R.call(U.capsuleCenter,collider,{&center});
         b.agent=U.add(b.root,U.agent);float speed=2.5f,stop=4;R.call(U.agentSpeed,b.agent,{&speed});R.call(U.agentStop,b.agent,{&stop});
         b.hp=100;b.armor=50;b.nextShot=now+6+i*.5f;b.target=spawnPosition(i+1);
+        U.active(b.root,true);
     }
     notification="Добавлены 4 тестовых бота";
 }
-static void resetWorld(Obj self){
+static bool resetWorld(Obj self){
+    TraceScope trace("reset gameplay scene");
     sceneRetry=.5f;
+    Obj readyCharacter=R.field<Obj>(self,U.fps,"character");
+    Obj readyCamera=R.call(U.cameraMain);
+    if(!U.alive(readyCharacter)||!U.alive(readyCamera)){log("Scene pending: player and camera not ready");return false;}
+    resetNativeUI();
     for(auto root:worldRoots)U.remove(root);worldRoots.clear();R.clearRoots();
     player=R.pin(self);playerTransform=R.pin(U.trans(self,true));character=R.pin(R.field<Obj>(self,U.fps,"character"));
     cameraObject=R.pin(R.call(U.cameraMain));cameraTransform=R.pin(U.trans(cameraObject,true));
     combat_init(&combat,weapons,WEAPON_COUNT);now=0;hudTimer=0;flash=0;grannyHP=100;grannyReset=0;
+    combat.owned[17]=1;combat.weapon=17;
     scoped=burstMode=wasCaught=false;burstLeft=0;recoilPitch=recoilYaw=lastPitch=lastYaw=0;
     gun=gunTransform=cubeMesh=nullptr;for(auto &b:bots)b={};for(auto &e:effects)e={};for(auto &g:grenades)g={};
     waypointCount=0;
     Obj grannyGO=R.field<Obj>(self,U.fps,"granny");Obj granny=grannyGO?U.get(grannyGO,U.granny):nullptr;
     if(granny){for(int i=1;i<=16;i++){std::string n="nav"+std::to_string(i);Obj t=R.field<Obj>(granny,U.granny,n.c_str());if(U.alive(t))waypoints[waypointCount++]=U.pos(t);}}
-    if(!U.alive(cameraObject)||!makeMaterials()){notification="Ожидание камеры и материалов";return;}
+    if(!U.alive(cameraObject)||!makeMaterials()){notification="Ожидание камеры и материалов";return false;}
     float fov=75,clip=.04f;R.call(U.setFov,cameraObject,{&fov});R.call(U.setClip,cameraObject,{&clip});
     weaponModel();if(botsEnabled)spawnBots();setStatus("Мод подключён");log("Scene initialized; waypoints="+std::to_string(waypointCount));
+    return true;
 }
 static bool smokeBetween(V3 a,V3 b){
     V3 delta=b-a;float n=dot(delta,delta);if(n<.01f)return false;
@@ -453,7 +519,10 @@ static void updateBots(){
         }
     }
 }
+#include "unity_ui.inc"
+
 static void makeHud(bool inGame){
+    updateNativeUI(inGame);
     std::ostringstream s;std::string status;
     {std::lock_guard<std::mutex> lock(hudMutex);status=bootStatus;}
     s<<"{\"status\":\""<<escape(status)<<"\",\"game\":"<<(inGame?"true":"false")
@@ -468,13 +537,14 @@ static void makeHud(bool inGame){
 static void tick(Obj self){
     if(paused){fireInput=0;return;}
     float dt=R.value<float>(R.call(U.fixedDelta));dt=clamp(dt,.001f,.1f);
-    if(self!=player||!U.alive(cameraObject))resetWorld(self);
-    else if(!cubeMesh){sceneRetry-=dt;if(sceneRetry<=0)resetWorld(self);}
+    if(self!=player||!U.alive(cameraObject)){if(!resetWorld(self)){makeHud(false);return;}}
+    else if(!cubeMesh){sceneRetry-=dt;if(sceneRetry<=0&&!resetWorld(self)){makeHud(false);return;}}
     if(!cameraTransform||!cubeMesh){makeHud(false);return;}
     now+=dt;
     bool caught=R.field<bool>(self,U.fps,"playerCaught");
     if(caught){wasCaught=true;fireInput=0;makeHud(false);return;}
     if(wasCaught){combat.health=100;combat.armor=100;wasCaught=false;if(botsEnabled)spawnBots();}
+    inputNativeUI();
     int id=buyInput.exchange(-1);
     if(id>=0){if(combat_buy(&combat,weapons,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();notification=std::string("Куплено: ")+weapons[id].name;}else notification="Недостаточно денег";}
     id=selectInput.exchange(-1);if(id>=0&&combat_select(&combat,WEAPON_COUNT,id)){scoped=burstMode=false;burstLeft=0;weaponModel();}
@@ -504,6 +574,7 @@ static void tick(Obj self){
 }
 using FixedUpdate=void(*)(Obj,const Method *);static FixedUpdate originalFixed;
 static void hookedFixed(Obj self,const Method *method){
+    static bool first=true;if(first){first=false;log("First FPSControllerNEW.FixedUpdate callback");}
     if(inTick){originalFixed(self,method);return;}
     inTick=true;
     if(self==player&&U.alive(cameraTransform)&&(lastPitch!=0||lastYaw!=0)){V3 undo{lastPitch,-lastYaw,0};R.call(U.rotate,cameraTransform,{&undo});lastPitch=lastYaw=0;}
@@ -520,7 +591,9 @@ static void boot(){
     bool ready=false;
     for(int i=0;i<240;i++){size_t n=0;R.domain_get_assemblies(R.domain_get(),&n);if(n){ready=true;break;}usleep(250000);}
     if(!ready){setStatus("Unity ещё не готова");return;}
-    R.thread_attach(R.domain_get());
+    void *attached=R.thread_attach(R.domain_get());
+    struct Detach {void *thread;~Detach(){if(thread)R.thread_detach(thread);}} detach{attached};
+    if(!attached){setStatus("Не удалось подключиться к Unity VM");return;}
     if(!U.bind())return;
     auto method=R.method(U.fps,"FixedUpdate",{});
     if(!method){setStatus("Не найден контроллер Granny 1.8.12");return;}
@@ -539,7 +612,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeStart(
     const char *p=env->GetStringUTFChars(path,nullptr);std::string filename=std::string(p)+"/granny-csgo.log";env->ReleaseStringUTFChars(path,p);
     logFile=fopen(filename.c_str(),"a");overlay=(jclass)env->NewGlobalRef(cls);soundCallback=env->GetStaticMethodID(cls,"playShot","(IF)V");
     botsEnabled=mode>=2;
-    log("Granny Tactical Lab iteration 2 / Granny 1.8.12 / arm64-v8a / mode="+std::to_string(mode));
+    log("Granny Tactical Lab iteration 6 / Granny 1.8.12 / arm64-v8a / automatic mode="+std::to_string(mode));
     std::thread(boot).detach();
 }
 extern "C" JNIEXPORT void JNICALL Java_org_modlab_granny_ModOverlay_nativeAction(JNIEnv *,jclass,jint action,jint value){

@@ -54,17 +54,21 @@ public final class CrashJournal {
         }
     }
     static String file(Context context, String filename) {
-        try { return read(new FileInputStream(new File(context.getFilesDir(), filename)), 60000); }
+        try (RandomAccessFile file=new RandomAccessFile(new File(context.getFilesDir(),filename),"r")) {
+            long start=Math.max(0,file.length()-60000);file.seek(start);
+            byte[] bytes=new byte[(int)(file.length()-start)];file.readFully(bytes);
+            return (start>0?"(последние 60000 байт)\n":"")+new String(bytes,"UTF-8");
+        }
         catch (Exception error) { return "(файл отсутствует)\n"; }
     }
     public static String report(Context context) {
-        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 5\n");
+        StringBuilder out = new StringBuilder("Granny Tactical Lab · iteration 6\n");
         out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
            .append(" Android ").append(android.os.Build.VERSION.RELEASE).append(" API ").append(android.os.Build.VERSION.SDK_INT)
            .append("\nABI ").append(java.util.Arrays.toString(android.os.Build.SUPPORTED_ABIS)).append('\n');
         try { out.append("page size=").append(android.system.Os.sysconf(android.system.OsConstants._SC_PAGESIZE)).append('\n'); }
         catch (Exception ignored) { }
-        out.append("Unity runs in :game; native mod defaults OFF; SDK startup providers disabled.\n");
+        out.append("Unity runs in :game; native mod AUTO weapons+bots; controls use Unity UI; SDK startup providers disabled.\n");
         out.append("\nRESOURCE LOOKUP\n").append(resourceStatus(context,"game_view_content_description","string"))
            .append('\n').append(resourceStatus(context,"unitySurfaceView","id")).append('\n');
         out.append("\nSTARTUP JOURNAL\n").append(file(context, FILE));
@@ -73,14 +77,18 @@ public final class CrashJournal {
             try {
                 android.app.ActivityManager manager = (android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
                 for (android.app.ApplicationExitInfo exit : manager.getHistoricalProcessExitReasons(context.getPackageName(), 0, 8)) {
+                    if(exit.getProcessName()==null||!exit.getProcessName().startsWith(context.getPackageName())) continue;
                     out.append("\nEXIT ").append(new Date(exit.getTimestamp())).append(" process=").append(exit.getProcessName())
                        .append(" reason=").append(exit.getReason()).append(" status=").append(exit.getStatus())
                        .append(" description=").append(exit.getDescription()).append('\n');
-                    try { out.append(read(exit.getTraceInputStream(), 50000)); }
+                    try {
+                        out.append(exit.getReason()==android.app.ApplicationExitInfo.REASON_CRASH_NATIVE
+                            ? NativeTombstone.read(exit.getTraceInputStream()) : read(exit.getTraceInputStream(),50000));
+                    }
                     catch (Exception failure) { out.append("Trace unavailable: ").append(failure).append('\n'); }
                 }
             } catch (Exception failure) { out.append("Exit history unavailable: ").append(failure).append('\n'); }
         }
-        return out.toString();
+        return out.length()>180000?out.substring(0,180000)+"\n(report truncated)":out.toString();
     }
 }

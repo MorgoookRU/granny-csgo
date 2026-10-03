@@ -7,6 +7,7 @@ import android.widget.*;
 
 /** Uses framework widgets only; no Unity, native libraries, sounds, or ad SDKs. */
 public final class DiagnosticActivity extends Activity {
+    private static boolean autoAttempted;
     private TextView report;
     private final android.os.Handler handler = new android.os.Handler();
     private int refreshId;
@@ -15,11 +16,11 @@ public final class DiagnosticActivity extends Activity {
         CrashJournal.append(this, "Diagnostic screen onCreate");
         LinearLayout layout = new LinearLayout(this); layout.setOrientation(LinearLayout.VERTICAL);
         int padding = (int)(16 * getResources().getDisplayMetrics().density); layout.setPadding(padding,padding,padding,padding);
-        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 5"); title.setTextSize(22); layout.addView(title);
+        TextView title = new TextView(this); title.setText("Granny Tactical Lab · 6"); title.setTextSize(22); layout.addView(title);
         TextView hint = new TextView(this);
-        hint.setText("Нажми «Запустить игру». Если она вылетит, вернись сюда и скопируй отчёт. Мод пока выключен.");
+        hint.setText("Игра запускается автоматически с оружием и ботами. После вылета скопируй отчёт и пришли его в чат.");
         layout.addView(hint);
-        Button launch = new Button(this); launch.setText("Запустить игру"); layout.addView(launch);
+        Button launch = new Button(this); launch.setText("Повторить запуск игры"); layout.addView(launch);
         launch.setOnClickListener(v -> launch(false));
         Button gl = new Button(this); gl.setText("Запустить через OpenGL"); layout.addView(gl);
         gl.setOnClickListener(v -> launch(true));
@@ -33,8 +34,20 @@ public final class DiagnosticActivity extends Activity {
         refresh.setOnClickListener(v -> refresh());
         ScrollView scroll = new ScrollView(this); report = new TextView(this); report.setTextSize(12); report.setTextIsSelectable(true);
         scroll.addView(report); layout.addView(scroll,new LinearLayout.LayoutParams(-1,0,1)); setContentView(layout);
+        if(state==null&&!autoAttempted&&!getIntent().getBooleanExtra("diagnostics",false)) {
+            autoAttempted=true; handler.post(() -> launch(false));
+        }
+    }
+    @Override protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);setIntent(intent);
+        if(!intent.getBooleanExtra("diagnostics",false)) handler.post(() -> launch(false));
+    }
+    @Override protected void onDestroy() {
+        if(isFinishing()) autoAttempted=false;
+        super.onDestroy();
     }
     private void launch(boolean openGL) {
+        autoAttempted=true;
         CrashJournal.append(this,"Request Unity launch; OpenGL=" + openGL);
         try {
             Intent intent = new Intent(); intent.setClassName(this,"com.unity3d.player.UnityPlayerActivity");

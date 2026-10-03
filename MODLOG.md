@@ -236,3 +236,32 @@
 - resources.arsc побайтно совпадает с APK 3 (SHA-256
   c31da5883fe087a78639bf1b31a6fb380e5daa3f3f57cf5cc930578fb615245e).
   Установка и запуск на Samsung ещё не подтверждены.
+
+## 2026-10-03 — установка 5 подтверждена, нативное падение, итерация 6
+
+- Пользователь подтвердил работающее разрешение ресурсов на SM-S916N:
+  string/game_view_content_description -> 0x7f0d0031, unitySurfaceView -> 0x7f07008d.
+- После включения native-мода процесс :game завершился с reason=5/status=11
+  (SIGSEGV). Пользователь уточнил: оружие без ботов падает при включении
+  в игре, оружие с ботами — при покупке. Точная нативная причина неизвестна.
+- Пользователь требует автоматический мод и управление внутри самой игры;
+  Android Views удалены из ModOverlay. Java оставляет только звуки,
+  загрузку native library и события lifecycle. Native mode=2 включается сам.
+- Launcher автоматически открывает игру, отдельная диагностика доступна
+  после вылета и через long-press shortcut «Отчёт».
+- Новый NativeUI создаёт Text/Image/Button/RectTransform в существующем
+  screen Canvas игры, использует Input.GetTouch и frameCount для multitouch
+  без повторных покупок на нескольких FixedUpdate одного кадра.
+- Магазин включает весь арсенал, страницы по 12; стартовый AK-47 и четыре бота.
+- Native вызовы проверяют класс receiver, живость Unity объекта и размер
+  boxed result. Массивы Mesh закреплены GC handles; bootstrap thread отцепляется.
+- Raw вызов RaycastHit.get_transform заменён поиском collider по instance ID.
+  Игровая сцена ждёт character/camera, бот собирается неактивным; старая модель
+  удаляется после сборки новой. В журнале есть STAGE/CALL и timestamps.
+- Добавлен собственный parser AOSP debuggerd tombstone protobuf, включая gzip,
+  выбор потока падения, build IDs и ограничение размера. Старые Native stack
+  смогут попасть в отчёт после обновления. Локально сохраняются свои символы.
+- Host проверки parser с protobuf fixture, созданным по официальной схеме,
+  прошли: crash thread, unsigned address, gzip, unknown fields, truncation и
+  invalid tag. Native и Java сборка проходили; работа UI на телефоне не проверена.
+- Фон Granny с AK и дальнейшая полировка остаются следующими шагами.

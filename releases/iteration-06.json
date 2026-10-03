@@ -1,0 +1,23 @@
+{
+  "tag": "iteration-06",
+  "filename": "granny-tactical-iteration-06.apk",
+  "bytes": 210481254,
+  "sha256": "7beae83aeaeb4a90f4986fb60595b4a970ef91ad806bb8ec339408c651738d29",
+  "package": "com.modlab.grannycsgo",
+  "resource_package": "com.dvloper.granny",
+  "architecture": "arm64-v8a",
+  "version_code": 97,
+  "android_install_verified": false,
+  "android_runtime_verified": false,
+  "native_mod_enabled_by_default": true,
+  "native_mode": 2,
+  "automatic_game_launch": true,
+  "gameplay_controls_in_unity_canvas": true,
+  "android_gameplay_overlay": false,
+  "independent_diagnostic_launcher": true,
+  "unity_process": ":game",
+  "sdk_startup_providers_enabled": false,
+  "resources_identical_to": "iteration-03",
+  "resource_lookup_calls_patched": 7,
+  "native_tombstone_decoder": true
+}
