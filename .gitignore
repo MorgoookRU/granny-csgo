@@ -1,0 +1,25 @@
+# Generated files and local caches
+__pycache__/
+*.py[cod]
+build/
+generated/
+.venv/
+
+# Game files and distributable builds belong outside Git history.
+*.apk
+*.xapk
+*.zip
+*.so
+*.dex
+*.class
+*.dll
+
+# Signing credentials stay in the local lab.
+private/
+*.p12
+*.jks
+*.keystore
+signing-password
+.env
+.env.*
+
